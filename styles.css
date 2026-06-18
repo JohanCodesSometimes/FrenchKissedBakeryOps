@@ -47,7 +47,8 @@ body {
 
 button,
 input,
-select {
+select,
+textarea {
   font: inherit;
 }
 
@@ -156,6 +157,13 @@ main {
   align-items: center;
 }
 
+.panel-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
 .topbar {
   justify-content: space-between;
   gap: 20px;
@@ -219,6 +227,11 @@ h2 {
   border-radius: 8px;
   cursor: pointer;
   font-weight: 750;
+}
+
+button:disabled {
+  cursor: wait;
+  opacity: 0.6;
 }
 
 .primary-button {
@@ -354,6 +367,7 @@ select {
 .empty-chart {
   align-items: center;
   justify-content: center;
+  flex-direction: column;
 }
 
 .chart span {
@@ -385,6 +399,10 @@ select {
 
 .table-empty {
   min-height: 120px;
+}
+
+.chart-action {
+  flex: 0 0 auto;
 }
 
 .chart-legend {
@@ -556,6 +574,169 @@ th {
   line-height: 1.45;
 }
 
+.notice {
+  position: sticky;
+  top: 12px;
+  z-index: 20;
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  box-shadow: var(--shadow);
+  font-weight: 700;
+}
+
+.notice.success {
+  border-left: 4px solid var(--accent);
+}
+
+.notice.error {
+  border-left: 4px solid var(--danger);
+}
+
+.record-list {
+  display: grid;
+}
+
+.record-list.compact .record-row {
+  grid-template-columns: minmax(0, 1fr) auto auto;
+}
+
+.record-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(150px, auto) auto;
+  align-items: center;
+  gap: 16px;
+  padding: 13px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.record-row:first-child {
+  padding-top: 0;
+}
+
+.record-row:last-child {
+  padding-bottom: 0;
+  border-bottom: 0;
+}
+
+.record-row strong,
+.record-row span {
+  display: block;
+}
+
+.record-row span {
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
+.record-value {
+  text-align: right;
+}
+
+.delete-button {
+  min-height: 34px;
+  padding: 0 10px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
+  border-radius: 8px;
+  background: transparent;
+  color: var(--danger);
+  cursor: pointer;
+  font-weight: 750;
+}
+
+.delete-button:hover {
+  background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+dialog {
+  width: min(680px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  padding: 0;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--ink);
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.28);
+}
+
+dialog::backdrop {
+  background: rgba(5, 15, 18, 0.62);
+}
+
+.entry-form {
+  padding: 22px;
+}
+
+.dialog-header,
+.form-actions {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+}
+
+.dialog-header {
+  margin-bottom: 20px;
+}
+
+.icon-button {
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 1.5rem;
+  line-height: 1;
+}
+
+.form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.form-grid label {
+  display: grid;
+  gap: 7px;
+  color: var(--muted);
+  font-size: 0.86rem;
+  font-weight: 750;
+}
+
+.form-grid input,
+.form-grid select,
+.form-grid textarea {
+  width: 100%;
+  min-height: 42px;
+  padding: 9px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--bg);
+  color: var(--ink);
+}
+
+.form-grid textarea {
+  min-height: 88px;
+  resize: vertical;
+}
+
+.full-field {
+  grid-column: 1 / -1;
+}
+
+.form-actions {
+  justify-content: flex-end;
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--line);
+}
+
 @media (max-width: 1100px) {
   .app-shell {
     grid-template-columns: 1fr;
@@ -602,6 +783,9 @@ th {
 
   .topbar-actions,
   .topbar-actions button,
+  .panel-actions,
+  .panel-actions a,
+  .panel-actions button,
   select {
     width: 100%;
   }
@@ -617,5 +801,27 @@ th {
     height: 190px;
     gap: 7px;
     padding: 12px;
+  }
+
+  .record-row,
+  .record-list.compact .record-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+
+  .record-value {
+    text-align: left;
+  }
+
+  .delete-button {
+    width: 100%;
+  }
+
+  .form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .full-field {
+    grid-column: auto;
   }
 }

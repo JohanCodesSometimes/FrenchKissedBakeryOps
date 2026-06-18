@@ -1,91 +1,75 @@
 # BakeryOps AI Prototype
 
-Private frontend and Square POS integration prototype for BakeryOps AI.
+Private, manual-entry operations dashboard for a bakery. This version uses no external database and no POS integration.
 
 ## Run Locally
+
+PowerShell:
 
 ```powershell
 $env:BAKERYOPS_USER="owner"
 $env:BAKERYOPS_PASSWORD="change-this-password"
-npm start
+$env:DATA_DIR="./data"
+node server.js
 ```
 
-Open:
+Open `http://127.0.0.1:4173`.
 
-```text
-http://127.0.0.1:4173
-```
+## Railway Configuration
 
-## Deploy on Railway
-
-1. Create a new Railway project.
-2. Deploy this folder from GitHub or the Railway CLI.
-3. Add the environment variables from `.env.example`.
-4. Railway should use:
+The existing Railway service should use:
 
 ```text
 npm start
 ```
 
-The app binds to `HOST=0.0.0.0` and Railway provides `PORT`.
-For this private prototype, attach a Railway volume and mount it at `/data` so Square OAuth tokens and sales state survive restarts.
-
-## Required Railway Variables
+Required variables:
 
 ```text
 BAKERYOPS_USER=owner
 BAKERYOPS_PASSWORD=<strong dashboard password>
 HOST=0.0.0.0
 DATA_DIR=/data
-
-SQUARE_ENVIRONMENT=sandbox
-SQUARE_APPLICATION_ID=<Square app id>
-SQUARE_APPLICATION_SECRET=<Square app secret>
-SQUARE_OAUTH_REDIRECT_URL=https://your-railway-domain.up.railway.app/api/square/oauth/callback
-SQUARE_WEBHOOK_SIGNATURE_KEY=<Square webhook signature key>
-SQUARE_WEBHOOK_URL=https://your-railway-domain.up.railway.app/api/square/webhook
-SQUARE_VERSION=2026-05-20
 ```
 
-Use `SQUARE_ENVIRONMENT=production` when connecting the bakery owner's real Square account.
+Railway supplies `PORT` automatically. Attach a Railway volume mounted at `/data` so records survive deploys and restarts.
 
-## Square Setup
+## Persistent Files
 
-In the Square Developer Dashboard:
-
-1. Create or open the BakeryOps AI application.
-2. Add this OAuth redirect URL:
+The server creates these files when the first matching record is saved:
 
 ```text
-https://your-railway-domain.up.railway.app/api/square/oauth/callback
+DATA_DIR/expenses.json
+DATA_DIR/sales.json
+DATA_DIR/inventory.json
+DATA_DIR/recipes.json
 ```
 
-3. Create a webhook subscription with this notification URL:
+Each file contains a JSON array. Writes use a temporary file and rename step to reduce the risk of partial JSON files.
+
+## Features
+
+- Blank dashboard until real records are entered
+- Manual expense, sale, inventory, and recipe forms
+- Financial totals calculated only from stored expenses and sales
+- Seven-day sales chart calculated from stored sales
+- Delete controls for all four record types
+- CSV export for expenses and sales
+- Basic Auth protection using Railway environment variables
+
+## API
 
 ```text
-https://your-railway-domain.up.railway.app/api/square/webhook
+GET    /api/dashboard
+POST   /api/expenses
+DELETE /api/expenses/:id
+POST   /api/sales
+DELETE /api/sales/:id
+POST   /api/inventory
+DELETE /api/inventory/:id
+POST   /api/recipes
+DELETE /api/recipes/:id
+GET    /api/export/expenses.csv
+GET    /api/export/sales.csv
+GET    /api/health
 ```
-
-4. Subscribe to payment events, especially:
-
-```text
-payment.updated
-```
-
-5. Copy the webhook signature key into Railway as `SQUARE_WEBHOOK_SIGNATURE_KEY`.
-
-## Runtime Flow
-
-1. The bakery owner clicks **Connect Square**.
-2. Square asks the owner to authorize read access for payments, orders, and merchant profile.
-3. Square sends the app a webhook when a POS payment changes.
-4. BakeryOps verifies the Square webhook signature.
-5. BakeryOps retrieves the payment and ignores anything not `COMPLETED`.
-6. BakeryOps retrieves the related order.
-7. Products sold, quantity, total, tax, discounts, and timestamp are saved.
-8. Recipe ingredients are deducted from inventory.
-9. The Profit Command Center refreshes from `/api/dashboard`.
-
-## Current Prototype Notes
-
-Sales and Square OAuth tokens are stored in `DATA_DIR/bakeryops.json`. That is acceptable for a private prototype with a Railway volume, but a production build should move this data to PostgreSQL/Supabase before relying on it for real operations.

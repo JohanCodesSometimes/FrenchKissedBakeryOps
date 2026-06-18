@@ -19,7 +19,7 @@
 
         <nav class="nav-list">
           <a class="active" href="#dashboard">Dashboard</a>
-          <a href="#receipts">Receipts</a>
+          <a href="#expenses">Expenses</a>
           <a href="#inventory">Inventory</a>
           <a href="#recipes">Recipes</a>
           <a href="#sales">Sales</a>
@@ -30,44 +30,45 @@
         <div class="role-card">
           <span>Signed in as</span>
           <strong>Owner</strong>
-          <p>Role-based controls enabled for managers and employees.</p>
+          <p>Data is stored privately in the configured Railway volume.</p>
         </div>
       </aside>
 
       <main>
         <header class="topbar">
           <div>
-            <p class="eyebrow">Saturday, June 6</p>
+            <p class="eyebrow" id="current-date"></p>
             <h1>Profit Command Center</h1>
           </div>
           <div class="topbar-actions">
-            <a class="ghost-button link-button" id="square-connect" href="/api/square/connect">Connect Square</a>
-            <span class="connection-status" id="square-status">Square not connected</span>
+            <button class="ghost-button" type="button" data-open-dialog="expense-dialog">Add Expense</button>
+            <button class="primary-button" type="button" data-open-dialog="sale-dialog">Add Sale</button>
             <button class="ghost-button" id="theme-toggle" type="button">Toggle dark</button>
-            <button class="primary-button" type="button">Upload receipt</button>
           </div>
         </header>
 
-        <section class="alert-strip" aria-label="AI insights">
+        <div class="notice" id="app-notice" role="status" hidden></div>
+
+        <section class="alert-strip" aria-label="Getting started">
           <article>
             <span class="status-dot"></span>
             <div>
-              <strong>No AI insights yet</strong>
-              <p>Insights will appear after sales, expenses, inventory, or supplier data exists.</p>
+              <strong id="sales-summary">No sales recorded yet</strong>
+              <p>Add a manual sale to begin tracking revenue and product performance.</p>
             </div>
           </article>
           <article>
             <span class="status-dot"></span>
             <div>
-              <strong>No supplier data available yet</strong>
-              <p>Upload receipts to start comparing ingredient prices by supplier.</p>
+              <strong id="expense-summary">No expenses recorded yet</strong>
+              <p>Add an expense to begin tracking costs and profit.</p>
             </div>
           </article>
           <article>
             <span class="status-dot"></span>
             <div>
-              <strong>No trend reports yet</strong>
-              <p>Trend recommendations will appear only after real trend data is added.</p>
+              <strong id="inventory-summary">No inventory items added yet</strong>
+              <p>Add ingredients to enable low-stock monitoring.</p>
             </div>
           </article>
         </section>
@@ -76,42 +77,42 @@
           <article class="metric-card">
             <span>Revenue Today</span>
             <strong id="revenue-today">$0.00</strong>
-            <small>No sales synced yet</small>
+            <small>From recorded sales</small>
           </article>
           <article class="metric-card">
             <span>Revenue This Week</span>
             <strong id="revenue-week">$0.00</strong>
-            <small>No sales synced yet</small>
+            <small>From recorded sales</small>
           </article>
           <article class="metric-card">
             <span>Revenue This Month</span>
             <strong id="revenue-month">$0.00</strong>
-            <small>No sales synced yet</small>
+            <small>From recorded sales</small>
           </article>
           <article class="metric-card">
             <span>Expenses Today</span>
             <strong id="expenses-today">$0.00</strong>
-            <small>No expenses recorded yet</small>
+            <small>From recorded expenses</small>
           </article>
           <article class="metric-card">
             <span>Expenses This Week</span>
             <strong id="expenses-week">$0.00</strong>
-            <small>No expenses recorded yet</small>
+            <small>From recorded expenses</small>
           </article>
           <article class="metric-card">
             <span>Expenses This Month</span>
             <strong id="expenses-month">$0.00</strong>
-            <small>No expenses recorded yet</small>
+            <small>From recorded expenses</small>
           </article>
           <article class="metric-card highlight">
             <span>Net Profit</span>
             <strong id="net-profit">$0.00</strong>
-            <small>Waiting for sales and expenses</small>
+            <small>Current month</small>
           </article>
           <article class="metric-card highlight">
             <span>Profit Margin</span>
             <strong id="profit-margin">0%</strong>
-            <small>Waiting for sales data</small>
+            <small>Current month</small>
           </article>
         </section>
 
@@ -120,23 +121,22 @@
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Sales analytics</p>
-                <h2>Revenue and margin trends</h2>
+                <h2>Revenue trend</h2>
               </div>
-              <select aria-label="Sales chart range">
-                <option>Last 7 days</option>
-                <option>Last 30 days</option>
-                <option>This quarter</option>
-              </select>
+              <div class="panel-actions">
+                <a class="ghost-button link-button" href="/api/export/sales.csv">Export CSV</a>
+                <button class="secondary-button" type="button" data-open-dialog="sale-dialog">Add Sale</button>
+              </div>
             </div>
-            <div class="chart empty-chart" id="sales-chart" aria-label="Revenue trend chart">
+            <div class="chart empty-chart" id="sales-chart" aria-label="Seven-day revenue chart">
               <div class="empty-state">
-                <strong>No sales synced yet</strong>
-                <p>Connect Square to populate revenue and margin charts.</p>
-                <a class="secondary-button link-button" href="/api/square/connect">Connect Square</a>
+                <strong>No sales recorded yet</strong>
+                <p>Add a sale to populate revenue analytics.</p>
+                <button class="secondary-button" type="button" data-open-dialog="sale-dialog">Add Sale</button>
               </div>
             </div>
             <div class="chart-legend">
-              <span>Revenue</span>
+              <span>Last 7 days</span>
               <span id="margin-trend">No margin data yet</span>
             </div>
           </article>
@@ -149,45 +149,51 @@
               </div>
             </div>
             <ul class="rank-list" id="product-metrics">
-              <li><span>No sales synced yet</span><strong>$0.00</strong></li>
+              <li><span>No sales recorded yet</span><strong>$0.00</strong></li>
             </ul>
-            <div class="margin-callout">
-              <strong>Highest margin</strong>
-              <p>No recipes created yet.</p>
+          </article>
+
+          <article class="panel wide" id="expenses">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Expense tracking</p>
+                <h2>Recent expenses</h2>
+              </div>
+              <div class="panel-actions">
+                <a class="ghost-button link-button" href="/api/export/expenses.csv">Export CSV</a>
+                <button class="secondary-button" type="button" data-open-dialog="expense-dialog">Add Expense</button>
+              </div>
             </div>
-            <div class="margin-callout danger">
-              <strong>Lowest margin</strong>
-              <p>No recipes created yet.</p>
+            <div class="record-list" id="expenses-list">
+              <div class="empty-state">
+                <strong>No expenses recorded yet</strong>
+                <p>Add an expense manually. Receipt parsing is not enabled yet.</p>
+              </div>
             </div>
           </article>
 
-          <article class="panel" id="receipts">
+          <article class="panel">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">Receipt intelligence</p>
-                <h2>Upload and parse</h2>
+                <p class="eyebrow">Receipt entry</p>
+                <h2>Add receipt expense</h2>
               </div>
             </div>
             <label class="upload-zone" for="receipt-upload">
               <input id="receipt-upload" type="file" accept="image/*,.pdf" />
-              <strong>Drop image or PDF</strong>
-              <span>Mobile photos, scans, and supplier invoices</span>
+              <strong>Select image or PDF</strong>
+              <span>You will confirm the expense details before anything is saved.</span>
             </label>
-            <dl class="receipt-preview">
-              <div><dt>Status</dt><dd>No expenses recorded yet</dd></div>
-              <div><dt>Subtotal</dt><dd>$0.00</dd></div>
-              <div><dt>Tax</dt><dd>$0.00</dd></div>
-              <div><dt>Total</dt><dd>$0.00</dd></div>
-            </dl>
+            <button class="secondary-button full" type="button" data-open-dialog="expense-dialog">Enter Expense Manually</button>
           </article>
 
           <article class="panel wide" id="inventory">
             <div class="panel-header">
               <div>
-                <p class="eyebrow">Inventory forecasting</p>
-                <h2>Stockout risk and reorder plan</h2>
+                <p class="eyebrow">Inventory management</p>
+                <h2>Ingredients and stock levels</h2>
               </div>
-              <button class="secondary-button" type="button">Generate shopping list</button>
+              <button class="secondary-button" type="button" data-open-dialog="inventory-dialog">Add Inventory Item</button>
             </div>
             <div class="table-wrap">
               <table>
@@ -196,9 +202,9 @@
                     <th>Ingredient</th>
                     <th>Current</th>
                     <th>Threshold</th>
-                    <th>Avg weekly use</th>
-                    <th>Predicted stockout</th>
-                    <th>Recommendation</th>
+                    <th>Weekly use</th>
+                    <th>Status</th>
+                    <th>Action</th>
                   </tr>
                 </thead>
                 <tbody id="inventory-body">
@@ -206,8 +212,7 @@
                     <td colspan="6">
                       <div class="empty-state table-empty">
                         <strong>No inventory items added yet</strong>
-                        <p>Add ingredients to enable stock alerts and forecasts.</p>
-                        <button class="secondary-button" type="button">Add Data</button>
+                        <p>Add an ingredient to begin tracking stock.</p>
                       </div>
                     </td>
                   </tr>
@@ -220,17 +225,32 @@
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Recipe costing</p>
-                <h2>No recipes created yet</h2>
+                <h2>Recipes</h2>
+              </div>
+              <button class="secondary-button" type="button" data-open-dialog="recipe-dialog">Add Recipe</button>
+            </div>
+            <div class="record-list compact" id="recipes-list">
+              <div class="empty-state">
+                <strong>No recipes created yet</strong>
+                <p>Add a recipe to track yield, cost, and selling price.</p>
               </div>
             </div>
-            <div class="cost-stack" id="recipe-costs">
-              <div><span>Total recipe cost</span><strong>$0.00</strong></div>
-              <div><span>Cost per unit</span><strong>$0.00</strong></div>
-              <div><span>Selling price</span><strong>$0.00</strong></div>
-              <div><span>Profit per unit</span><strong>$0.00</strong></div>
-              <div><span>Margin</span><strong>0%</strong></div>
+          </article>
+
+          <article class="panel wide">
+            <div class="panel-header">
+              <div>
+                <p class="eyebrow">Manual sales</p>
+                <h2>Recent sales</h2>
+              </div>
+              <button class="secondary-button" type="button" data-open-dialog="sale-dialog">Add Sale</button>
             </div>
-            <button class="secondary-button full" type="button">Add Data</button>
+            <div class="record-list" id="sales-list">
+              <div class="empty-state">
+                <strong>No sales recorded yet</strong>
+                <p>Manual sales will appear here after they are saved.</p>
+              </div>
+            </div>
           </article>
 
           <article class="panel" id="suppliers">
@@ -240,45 +260,101 @@
                 <h2>Price intelligence</h2>
               </div>
             </div>
-            <ul class="supplier-list" id="supplier-list">
-              <li><span>No supplier data available yet</span><strong>Upload receipts</strong><em>$0.00</em></li>
-            </ul>
-            <div class="savings-box">
-              <strong>$0.00 estimated savings</strong>
-              <p>Supplier savings appear after receipt data is available.</p>
+            <div class="empty-state">
+              <strong>No supplier data available yet</strong>
+              <p>Supplier intelligence will be added after receipt data entry is expanded.</p>
             </div>
-          </article>
-
-          <article class="panel">
-            <div class="panel-header">
-              <div>
-                <p class="eyebrow">Square POS</p>
-                <h2>Recent completed sales</h2>
-              </div>
-            </div>
-            <ul class="rank-list" id="recent-sales">
-              <li><span>No Square sales received yet</span><strong>Waiting</strong></li>
-            </ul>
           </article>
 
           <article class="panel wide" id="trends">
             <div class="panel-header">
               <div>
                 <p class="eyebrow">Trend discovery</p>
-                <h2>AI trend recommendations</h2>
+                <h2>Trend recommendations</h2>
               </div>
             </div>
-            <div class="trend-grid">
-              <article class="empty-state">
-                <span>No trend reports yet</span>
-                <strong>Add trend data</strong>
-                <p>AI trend recommendations will appear only after real trend data is available.</p>
-              </article>
+            <div class="empty-state">
+              <strong>No trend reports yet</strong>
+              <p>Trend data is not enabled in this prototype.</p>
             </div>
           </article>
         </section>
       </main>
     </div>
+
+    <dialog id="expense-dialog">
+      <form class="entry-form" id="expense-form">
+        <div class="dialog-header">
+          <div><p class="eyebrow">Manual entry</p><h2>Add Expense</h2></div>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button>
+        </div>
+        <div class="form-grid">
+          <label>Date<input name="date" type="date" required /></label>
+          <label>Vendor<input name="vendor" type="text" maxlength="120" required /></label>
+          <label>Category<select name="category" required><option value="">Select category</option><option>Ingredients</option><option>Packaging</option><option>Equipment</option><option>Utilities</option><option>Miscellaneous</option></select></label>
+          <label>Total<input name="total" type="number" min="0" step="0.01" required /></label>
+          <label>Tax<input name="tax" type="number" min="0" step="0.01" value="0" /></label>
+          <label class="full-field">Notes<textarea name="notes" rows="3" maxlength="1000"></textarea></label>
+        </div>
+        <div class="form-actions"><button class="ghost-button" type="button" data-close-dialog>Cancel</button><button class="primary-button" type="submit">Save Expense</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="sale-dialog">
+      <form class="entry-form" id="sale-form">
+        <div class="dialog-header">
+          <div><p class="eyebrow">Manual entry</p><h2>Add Sale</h2></div>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button>
+        </div>
+        <div class="form-grid">
+          <label>Date<input name="date" type="date" required /></label>
+          <label>Product<input name="productName" type="text" maxlength="120" required /></label>
+          <label>Quantity<input name="quantity" type="number" min="0.01" step="0.01" required /></label>
+          <label>Total<input name="total" type="number" min="0" step="0.01" required /></label>
+          <label>Tax<input name="tax" type="number" min="0" step="0.01" value="0" /></label>
+          <label>Discounts<input name="discounts" type="number" min="0" step="0.01" value="0" /></label>
+          <label class="full-field">Notes<textarea name="notes" rows="3" maxlength="1000"></textarea></label>
+        </div>
+        <div class="form-actions"><button class="ghost-button" type="button" data-close-dialog>Cancel</button><button class="primary-button" type="submit">Save Sale</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="inventory-dialog">
+      <form class="entry-form" id="inventory-form">
+        <div class="dialog-header">
+          <div><p class="eyebrow">Manual entry</p><h2>Add Inventory Item</h2></div>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button>
+        </div>
+        <div class="form-grid">
+          <label>Ingredient name<input name="name" type="text" maxlength="120" required /></label>
+          <label>Unit<input name="unit" type="text" maxlength="40" placeholder="lb, oz, each" required /></label>
+          <label>Current quantity<input name="currentQuantity" type="number" min="0" step="0.01" required /></label>
+          <label>Minimum threshold<input name="minimumThreshold" type="number" min="0" step="0.01" required /></label>
+          <label>Average weekly use<input name="averageWeeklyUsage" type="number" min="0" step="0.01" value="0" /></label>
+        </div>
+        <div class="form-actions"><button class="ghost-button" type="button" data-close-dialog>Cancel</button><button class="primary-button" type="submit">Save Item</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="recipe-dialog">
+      <form class="entry-form" id="recipe-form">
+        <div class="dialog-header">
+          <div><p class="eyebrow">Manual entry</p><h2>Add Recipe</h2></div>
+          <button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button>
+        </div>
+        <div class="form-grid">
+          <label>Recipe name<input name="name" type="text" maxlength="120" required /></label>
+          <label>Category<input name="category" type="text" maxlength="80" /></label>
+          <label>Yield quantity<input name="yieldQuantity" type="number" min="0.01" step="0.01" required /></label>
+          <label>Yield unit<input name="yieldUnit" type="text" maxlength="40" placeholder="cookies, cakes, servings" required /></label>
+          <label>Total recipe cost<input name="totalCost" type="number" min="0" step="0.01" value="0" /></label>
+          <label>Selling price per unit<input name="sellingPrice" type="number" min="0" step="0.01" value="0" /></label>
+          <label class="full-field">Ingredients<textarea name="ingredients" rows="4" maxlength="3000" placeholder="List each ingredient and quantity"></textarea></label>
+          <label class="full-field">Notes<textarea name="notes" rows="3" maxlength="1000"></textarea></label>
+        </div>
+        <div class="form-actions"><button class="ghost-button" type="button" data-close-dialog>Cancel</button><button class="primary-button" type="submit">Save Recipe</button></div>
+      </form>
+    </dialog>
 
     <script src="script.js"></script>
   </body>

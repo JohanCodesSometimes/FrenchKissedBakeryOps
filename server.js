@@ -8,330 +8,156 @@ const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
 const username = process.env.BAKERYOPS_USER || "owner";
 const password = process.env.BAKERYOPS_PASSWORD;
-const squareAccessToken = process.env.SQUARE_ACCESS_TOKEN;
-const squareApplicationId = process.env.SQUARE_APPLICATION_ID;
-const squareApplicationSecret = process.env.SQUARE_APPLICATION_SECRET;
-const squareEnvironment = process.env.SQUARE_ENVIRONMENT || "sandbox";
-const squareWebhookSignatureKey = process.env.SQUARE_WEBHOOK_SIGNATURE_KEY;
-const squareWebhookUrl = process.env.SQUARE_WEBHOOK_URL;
-const squareOAuthRedirectUrl = process.env.SQUARE_OAUTH_REDIRECT_URL;
-const squareVersion = process.env.SQUARE_VERSION || "2026-05-20";
-const dataDir = process.env.DATA_DIR || path.join(root, "data");
-const dataPath = path.join(dataDir, "bakeryops.json");
+const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
 
-const squareApiBase =
-  squareEnvironment === "production"
-    ? "https://connect.squareup.com"
-    : "https://connect.squareupsandbox.com";
-const squareAuthorizeBase =
-  squareEnvironment === "production"
-    ? "https://connect.squareup.com/oauth2/authorize"
-    : "https://connect.squareupsandbox.com/oauth2/authorize";
+const collections = {
+  expenses: loadCollection("expenses"),
+  sales: loadCollection("sales"),
+  inventory: loadCollection("inventory"),
+  recipes: loadCollection("recipes"),
+};
 
 const types = {
   ".html": "text/html; charset=utf-8",
   ".css": "text/css; charset=utf-8",
   ".js": "application/javascript; charset=utf-8",
-  ".json": "application/json; charset=utf-8",
 };
-
-const state = loadState();
 
 http
   .createServer(async (req, res) => {
     try {
-      const url = new URL(req.url, `http://${req.headers.host}`);
+      const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
       if (url.pathname === "/api/health") {
-        return sendJson(res, 200, {
-          ok: true,
-          squareConfigured: Boolean(getSquareAccessToken() && squareWebhookSignatureKey),
-        });
-      }
-
-      if (url.pathname === "/api/dashboard") {
-        if (password && !isAuthorized(req)) return requireLogin(res);
-        return sendJson(res, 200, buildDashboard());
-      }
-
-      if (url.pathname === "/api/square/status") {
-        if (password && !isAuthorized(req)) return requireLogin(res);
-        return sendJson(res, 200, {
-          connected: Boolean(getSquareAccessToken()),
-          merchantId: state.square?.merchantId || null,
-          environment: squareEnvironment,
-          webhookConfigured: Boolean(squareWebhookSignatureKey && squareWebhookUrl),
-        });
-      }
-
-      if (url.pathname === "/api/square/connect") {
-        if (password && !isAuthorized(req)) return requireLogin(res);
-        return redirectToSquareOAuth(res);
-      }
-
-      if (url.pathname === "/api/square/oauth/callback") {
-        return handleSquareOAuthCallback(url, res);
-      }
-
-      if (url.pathname === "/api/square/webhook" && req.method === "POST") {
-        return handleSquareWebhook(req, res);
+        return sendJson(res, 200, { ok: true, dataDir });
       }
 
       if (password && !isAuthorized(req)) return requireLogin(res);
+
+      if (url.pathname === "/api/dashboard" && req.method === "GET") {
+        return sendJson(res, 200, buildDashboard());
+      }
+
+      const exportMatch = url.pathname.match(/^\/api\/export\/(expenses|sales)\.csv$/);
+      if (exportMatch && req.method === "GET") {
+        return exportCsv(res, exportMatch[1]);
+      }
+
+      const collectionMatch = url.pathname.match(/^\/api\/(expenses|sales|inventory|recipes)$/);
+      if (collectionMatch && req.method === "POST") {
+        return createRecord(collectionMatch[1], req, res);
+      }
+
+      const deleteMatch = url.pathname.match(/^\/api\/(expenses|sales|inventory|recipes)\/([^/]+)$/);
+      if (deleteMatch && req.method === "DELETE") {
+        return deleteRecord(deleteMatch[1], decodeURIComponent(deleteMatch[2]), res);
+      }
+
       return serveStatic(url.pathname, res);
     } catch (error) {
       console.error(error);
-      sendJson(res, 500, { error: "Internal server error" });
+      const status = error.statusCode || 500;
+      sendJson(res, status, { error: status === 500 ? "Internal server error" : error.message });
     }
   })
   .listen(port, host, () => {
     console.log(`BakeryOps AI running on ${host}:${port}`);
+    console.log(`Persistent data directory: ${dataDir}`);
     if (!password) console.log("Set BAKERYOPS_PASSWORD to require a login before sharing.");
   });
 
-async function handleSquareWebhook(req, res) {
-  const rawBody = await readRawBody(req);
-
-  if (!squareWebhookSignatureKey || !squareWebhookUrl) {
-    return sendJson(res, 500, {
-      error: "Square webhook verification is not configured",
-    });
-  }
-
-  if (!isValidSquareSignature(req, rawBody)) {
-    return sendJson(res, 403, { error: "Invalid Square signature" });
-  }
-
-  const event = JSON.parse(rawBody.toString("utf8"));
-  const paymentId = event?.data?.id || event?.data?.object?.payment?.id;
-  const eventType = event?.type;
-
-  if (!eventType?.startsWith("payment.") || !paymentId) {
-    return sendJson(res, 200, { ignored: true, reason: "Not a payment event" });
-  }
-
-  const payment = await retrieveSquarePayment(paymentId);
-  if (payment.status !== "COMPLETED") {
-    return sendJson(res, 200, {
-      ignored: true,
-      reason: `Payment status is ${payment.status || "unknown"}`,
-    });
-  }
-
-  if (!payment.order_id) {
-    return sendJson(res, 200, { ignored: true, reason: "Payment has no order_id" });
-  }
-
-  const order = await retrieveSquareOrder(payment.order_id);
-  const result = ingestOrder({
-    paymentId: payment.id,
-    orderId: payment.order_id,
-    status: payment.status,
-    order,
-  });
-
-  saveState();
-  return sendJson(res, 200, result);
+async function createRecord(collectionName, req, res) {
+  const input = await readJsonBody(req);
+  const record = normalizeRecord(collectionName, input);
+  collections[collectionName].unshift(record);
+  saveCollection(collectionName);
+  sendJson(res, 201, record);
 }
 
-async function retrieveSquarePayment(paymentId) {
-  const result = await squareRequest(`/v2/payments/${paymentId}`);
-  return result.payment;
+function deleteRecord(collectionName, id, res) {
+  const index = collections[collectionName].findIndex((record) => record.id === id);
+  if (index === -1) return sendJson(res, 404, { error: "Record not found" });
+
+  collections[collectionName].splice(index, 1);
+  saveCollection(collectionName);
+  sendJson(res, 200, { ok: true });
 }
 
-async function retrieveSquareOrder(orderId) {
-  const result = await squareRequest(`/v2/orders/${orderId}`);
-  return result.order;
-}
-
-async function squareRequest(endpoint) {
-  const accessToken = getSquareAccessToken();
-  if (!accessToken) throw new Error("Square is not connected");
-
-  const response = await fetch(`${squareApiBase}${endpoint}`, {
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      "Square-Version": squareVersion,
-      "Content-Type": "application/json",
-    },
-  });
-
-  const body = await response.json();
-  if (!response.ok) {
-    throw new Error(`Square API ${response.status}: ${JSON.stringify(body)}`);
-  }
-
-  return body;
-}
-
-function getSquareAccessToken() {
-  return state.square?.accessToken || squareAccessToken;
-}
-
-function redirectToSquareOAuth(res) {
-  if (!squareApplicationId || !squareOAuthRedirectUrl) {
-    return sendHtml(
-      res,
-      500,
-      "<h1>Square OAuth is not configured</h1><p>Set SQUARE_APPLICATION_ID and SQUARE_OAUTH_REDIRECT_URL in Railway.</p>",
-    );
-  }
-
-  const stateToken = crypto.randomBytes(24).toString("hex");
-  state.oauthStates[stateToken] = Date.now();
-  saveState();
-
-  const params = new URLSearchParams({
-    client_id: squareApplicationId,
-    scope: "PAYMENTS_READ ORDERS_READ MERCHANT_PROFILE_READ",
-    state: stateToken,
-    redirect_uri: squareOAuthRedirectUrl,
-  });
-
-  res.writeHead(302, { Location: `${squareAuthorizeBase}?${params}` });
-  res.end();
-}
-
-async function handleSquareOAuthCallback(url, res) {
-  const code = url.searchParams.get("code");
-  const returnedState = url.searchParams.get("state");
-  const error = url.searchParams.get("error");
-
-  if (error) {
-    return sendHtml(res, 400, `<h1>Square connection failed</h1><p>${escapeHtml(error)}</p>`);
-  }
-
-  if (!code || !returnedState || !state.oauthStates[returnedState]) {
-    return sendHtml(res, 400, "<h1>Invalid Square OAuth callback</h1>");
-  }
-
-  delete state.oauthStates[returnedState];
-
-  if (!squareApplicationId || !squareApplicationSecret || !squareOAuthRedirectUrl) {
-    return sendHtml(res, 500, "<h1>Square OAuth secrets are not configured</h1>");
-  }
-
-  const response = await fetch(`${squareApiBase}/oauth2/token`, {
-    method: "POST",
-    headers: {
-      "Square-Version": squareVersion,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      client_id: squareApplicationId,
-      client_secret: squareApplicationSecret,
-      code,
-      grant_type: "authorization_code",
-      redirect_uri: squareOAuthRedirectUrl,
-    }),
-  });
-
-  const token = await response.json();
-  if (!response.ok) {
-    return sendHtml(
-      res,
-      500,
-      `<h1>Could not connect Square</h1><pre>${escapeHtml(JSON.stringify(token, null, 2))}</pre>`,
-    );
-  }
-
-  state.square = {
-    accessToken: token.access_token,
-    refreshToken: token.refresh_token,
-    merchantId: token.merchant_id,
-    expiresAt: token.expires_at,
-    connectedAt: new Date().toISOString(),
+function normalizeRecord(collectionName, input) {
+  const common = {
+    id: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
   };
-  saveState();
 
-  sendHtml(
-    res,
-    200,
-    "<h1>Square connected</h1><p>You can close this tab and return to BakeryOps AI.</p>",
-  );
-}
-
-function ingestOrder({ paymentId, orderId, status, order }) {
-  if (state.processedPayments[paymentId]) {
-    return { ok: true, duplicate: true, dashboard: buildDashboard() };
+  if (collectionName === "expenses") {
+    return {
+      ...common,
+      date: requiredDate(input.date, "Expense date"),
+      vendor: requiredText(input.vendor, "Vendor"),
+      category: requiredText(input.category, "Category"),
+      total: requiredMoney(input.total, "Total"),
+      tax: optionalMoney(input.tax),
+      notes: optionalText(input.notes),
+      source: "manual",
+    };
   }
 
-  const sale = normalizeSquareOrder({ paymentId, orderId, status, order });
-  state.sales.unshift(sale);
-  state.processedPayments[paymentId] = true;
+  if (collectionName === "sales") {
+    return {
+      ...common,
+      date: requiredDate(input.date, "Sale date"),
+      productName: requiredText(input.productName, "Product name"),
+      quantity: requiredPositiveNumber(input.quantity, "Quantity"),
+      total: requiredMoney(input.total, "Total"),
+      tax: optionalMoney(input.tax),
+      discounts: optionalMoney(input.discounts),
+      notes: optionalText(input.notes),
+      source: "manual",
+    };
+  }
 
-  deductIngredients(sale.products);
-  addSupplierInsights(sale);
-
-  return { ok: true, sale, dashboard: buildDashboard() };
-}
-
-function normalizeSquareOrder({ paymentId, orderId, status, order }) {
-  const products = (order.line_items || []).map((item) => ({
-    id: item.catalog_object_id || item.uid,
-    name: item.name,
-    quantity: Number(item.quantity || 0),
-    total: centsToDollars(item.total_money?.amount),
-    tax: centsToDollars(item.total_tax_money?.amount),
-    discounts: centsToDollars(item.total_discount_money?.amount),
-  }));
+  if (collectionName === "inventory") {
+    return {
+      ...common,
+      name: requiredText(input.name, "Ingredient name"),
+      currentQuantity: requiredNonNegativeNumber(input.currentQuantity, "Current quantity"),
+      unit: requiredText(input.unit, "Unit"),
+      minimumThreshold: requiredNonNegativeNumber(input.minimumThreshold, "Minimum threshold"),
+      averageWeeklyUsage: optionalNonNegativeNumber(input.averageWeeklyUsage),
+    };
+  }
 
   return {
-    paymentId,
-    orderId,
-    status,
-    timestamp: order.closed_at || order.created_at || new Date().toISOString(),
-    total: centsToDollars(order.total_money?.amount),
-    tax: centsToDollars(order.total_tax_money?.amount),
-    discounts: centsToDollars(order.total_discount_money?.amount),
-    products,
+    ...common,
+    name: requiredText(input.name, "Recipe name"),
+    category: optionalText(input.category),
+    yieldQuantity: requiredPositiveNumber(input.yieldQuantity, "Yield quantity"),
+    yieldUnit: requiredText(input.yieldUnit, "Yield unit"),
+    sellingPrice: optionalMoney(input.sellingPrice),
+    totalCost: optionalMoney(input.totalCost),
+    ingredients: optionalText(input.ingredients),
+    notes: optionalText(input.notes),
   };
-}
-
-function deductIngredients(products) {
-  for (const product of products) {
-    const recipe = state.recipes[product.name];
-    if (!recipe) continue;
-
-    for (const ingredient of recipe.ingredients) {
-      const inventoryItem = state.inventory[ingredient.name];
-      if (!inventoryItem) continue;
-      inventoryItem.currentQuantity = round(
-        inventoryItem.currentQuantity - ingredient.quantity * product.quantity,
-      );
-    }
-  }
-}
-
-function addSupplierInsights(sale) {
-  const itemCount = sale.products.reduce((total, product) => total + product.quantity, 0);
-
-  state.insights.unshift({
-    type: "sales",
-    title: `${itemCount} item${itemCount === 1 ? "" : "s"} sold from Square POS`,
-    body: "Sales analytics were updated. Inventory was deducted where matching recipes exist.",
-  });
-
-  state.insights = state.insights.slice(0, 6);
 }
 
 function buildDashboard() {
   const now = new Date();
-  const todayKey = now.toISOString().slice(0, 10);
-  const monthKey = now.toISOString().slice(0, 7);
+  const todayKey = localDateKey(now);
+  const monthKey = todayKey.slice(0, 7);
   const weekStart = new Date(now);
-  weekStart.setDate(now.getDate() - now.getDay());
   weekStart.setHours(0, 0, 0, 0);
+  weekStart.setDate(now.getDate() - now.getDay());
 
-  const todaySales = state.sales.filter((sale) => sale.timestamp.slice(0, 10) === todayKey);
-  const weekSales = state.sales.filter((sale) => new Date(sale.timestamp) >= weekStart);
-  const monthSales = state.sales.filter((sale) => sale.timestamp.slice(0, 7) === monthKey);
-  const todayExpenses = state.expenses.filter((expense) => expense.timestamp.slice(0, 10) === todayKey);
-  const weekExpenses = state.expenses.filter((expense) => new Date(expense.timestamp) >= weekStart);
-  const monthExpensesList = state.expenses.filter((expense) => expense.timestamp.slice(0, 7) === monthKey);
+  const todaySales = collections.sales.filter((sale) => sale.date === todayKey);
+  const weekSales = collections.sales.filter((sale) => dateFromKey(sale.date) >= weekStart);
+  const monthSales = collections.sales.filter((sale) => sale.date.startsWith(monthKey));
+  const todayExpenses = collections.expenses.filter((expense) => expense.date === todayKey);
+  const weekExpenses = collections.expenses.filter((expense) => dateFromKey(expense.date) >= weekStart);
+  const monthExpenses = collections.expenses.filter((expense) => expense.date.startsWith(monthKey));
   const monthRevenue = sum(monthSales, "total");
-  const monthExpenses = sum(monthExpensesList, "total");
-  const lowStock = Object.values(state.inventory).filter(
+  const monthExpenseTotal = sum(monthExpenses, "total");
+  const inventoryById = Object.fromEntries(collections.inventory.map((item) => [item.id, item]));
+  const lowStock = collections.inventory.filter(
     (item) => item.currentQuantity <= item.minimumThreshold,
   );
 
@@ -342,57 +168,110 @@ function buildDashboard() {
       revenueThisMonth: monthRevenue,
       expensesToday: sum(todayExpenses, "total"),
       expensesThisWeek: sum(weekExpenses, "total"),
-      expensesThisMonth: monthExpenses,
-      netProfit: round(monthRevenue - monthExpenses),
-      profitMargin: monthRevenue ? round(((monthRevenue - monthExpenses) / monthRevenue) * 100) : 0,
+      expensesThisMonth: monthExpenseTotal,
+      netProfit: round(monthRevenue - monthExpenseTotal),
+      profitMargin: monthRevenue
+        ? round(((monthRevenue - monthExpenseTotal) / monthRevenue) * 100)
+        : 0,
     },
-    inventory: {
-      alerts: lowStock.length,
-      lowStock,
-      all: state.inventory,
-    },
-    sales: state.sales.slice(0, 20),
-    expenses: state.expenses.slice(0, 20),
-    recipes: state.recipes,
-    supplierPrices: state.supplierPrices,
-    trendReports: state.trendReports,
+    expenses: collections.expenses,
+    sales: collections.sales,
+    inventory: { alerts: lowStock.length, lowStock, all: inventoryById },
+    recipes: collections.recipes,
     productMetrics: buildProductMetrics(),
-    insights: state.insights,
     updatedAt: new Date().toISOString(),
   };
 }
 
 function buildProductMetrics() {
   const totals = new Map();
-  for (const sale of state.sales) {
-    for (const product of sale.products) {
-      const existing = totals.get(product.name) || { name: product.name, revenue: 0, quantity: 0 };
-      existing.revenue = round(existing.revenue + product.total);
-      existing.quantity = round(existing.quantity + product.quantity);
-      totals.set(product.name, existing);
-    }
+  for (const sale of collections.sales) {
+    const current = totals.get(sale.productName) || {
+      name: sale.productName,
+      revenue: 0,
+      quantity: 0,
+    };
+    current.revenue = round(current.revenue + sale.total);
+    current.quantity = round(current.quantity + sale.quantity);
+    totals.set(sale.productName, current);
   }
 
   return {
     topSelling: [...totals.values()].sort((a, b) => b.revenue - a.revenue),
-    highestMargin: [],
-    lowestMargin: [],
   };
 }
 
-function serveStatic(pathname, res) {
-  if (pathname === "/") pathname = "/index.html";
+function exportCsv(res, collectionName) {
+  const isExpenses = collectionName === "expenses";
+  const headers = isExpenses
+    ? ["Date", "Vendor", "Category", "Total", "Tax", "Notes", "Source"]
+    : ["Date", "Product", "Quantity", "Total", "Tax", "Discounts", "Notes", "Source"];
+  const rows = collections[collectionName].map((record) =>
+    isExpenses
+      ? [record.date, record.vendor, record.category, record.total, record.tax, record.notes, record.source]
+      : [
+          record.date,
+          record.productName,
+          record.quantity,
+          record.total,
+          record.tax,
+          record.discounts,
+          record.notes,
+          record.source,
+        ],
+  );
+  const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
 
-  const filePath = path.normalize(path.join(root, pathname));
+  res.writeHead(200, {
+    "Content-Type": "text/csv; charset=utf-8",
+    "Content-Disposition": `attachment; filename="bakeryops-${collectionName}.csv"`,
+  });
+  res.end(`\uFEFF${csv}`);
+}
+
+function csvCell(value) {
+  const text = String(value ?? "");
+  return `"${text.replaceAll('"', '""')}"`;
+}
+
+function loadCollection(name) {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const filePath = collectionPath(name);
+  if (!fs.existsSync(filePath)) return [];
+
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (error) {
+    console.error(`Could not load ${filePath}:`, error);
+    return [];
+  }
+}
+
+function saveCollection(name) {
+  fs.mkdirSync(dataDir, { recursive: true });
+  const filePath = collectionPath(name);
+  const tempPath = `${filePath}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(collections[name], null, 2), "utf8");
+  fs.renameSync(tempPath, filePath);
+}
+
+function collectionPath(name) {
+  return path.join(dataDir, `${name}.json`);
+}
+
+function serveStatic(pathname, res) {
+  const requested = pathname === "/" ? "/index.html" : pathname;
+  const filePath = path.normalize(path.join(root, requested));
   const allowedFiles = new Set([
     path.join(root, "index.html"),
     path.join(root, "styles.css"),
     path.join(root, "script.js"),
   ]);
 
-  if (!filePath.startsWith(root) || !allowedFiles.has(filePath)) {
-    res.writeHead(403);
-    res.end("Forbidden");
+  if (!allowedFiles.has(filePath)) {
+    res.writeHead(404);
+    res.end("Not found");
     return;
   }
 
@@ -402,32 +281,15 @@ function serveStatic(pathname, res) {
       res.end("Not found");
       return;
     }
-
-    res.writeHead(200, {
-      "Content-Type": types[path.extname(filePath)] || "application/octet-stream",
-    });
+    res.writeHead(200, { "Content-Type": types[path.extname(filePath)] });
     res.end(body);
   });
-}
-
-function isValidSquareSignature(req, rawBody) {
-  const squareSignature = req.headers["x-square-hmacsha256-signature"];
-  if (!squareSignature) return false;
-
-  const signature = crypto
-    .createHmac("sha256", squareWebhookSignatureKey)
-    .update(squareWebhookUrl + rawBody.toString("utf8"))
-    .digest("base64");
-
-  if (signature.length !== squareSignature.length) return false;
-  return crypto.timingSafeEqual(Buffer.from(signature), Buffer.from(squareSignature));
 }
 
 function isAuthorized(req) {
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
   if (scheme !== "Basic" || !encoded) return false;
-
   const credentials = Buffer.from(encoded, "base64").toString("utf8");
   return credentials === `${username}:${password}`;
 }
@@ -445,77 +307,98 @@ function sendJson(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-function sendHtml(res, status, body) {
-  res.writeHead(status, { "Content-Type": "text/html; charset=utf-8" });
-  res.end(`<!doctype html><html><body>${body}</body></html>`);
-}
-
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;");
-}
-
-function readRawBody(req) {
+function readJsonBody(req) {
   return new Promise((resolve, reject) => {
     const chunks = [];
-    req.on("data", (chunk) => chunks.push(chunk));
-    req.on("end", () => resolve(Buffer.concat(chunks)));
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > 1_000_000) {
+        const error = new Error("Request body is too large");
+        error.statusCode = 413;
+        reject(error);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      try {
+        const text = Buffer.concat(chunks).toString("utf8");
+        resolve(text ? JSON.parse(text) : {});
+      } catch {
+        const error = new Error("Invalid JSON body");
+        error.statusCode = 400;
+        reject(error);
+      }
+    });
     req.on("error", reject);
   });
 }
 
-async function readJsonBody(req) {
-  const body = await readRawBody(req);
-  return body.length ? JSON.parse(body.toString("utf8")) : {};
+function requiredText(value, label) {
+  const text = String(value || "").trim();
+  if (!text) throw validationError(`${label} is required`);
+  return text.slice(0, 500);
 }
 
-function loadState() {
-  try {
-    return withStateDefaults(JSON.parse(fs.readFileSync(dataPath, "utf8")));
-  } catch {
-    return withStateDefaults({
-      processedPayments: {},
-      sales: [],
-      expenses: [],
-      insights: [],
-      inventory: {},
-      recipes: {},
-      supplierPrices: [],
-      trendReports: [],
-    });
-  }
+function optionalText(value) {
+  return String(value || "").trim().slice(0, 5000);
 }
 
-function withStateDefaults(savedState) {
-  return {
-    ...savedState,
-    processedPayments: savedState.processedPayments || {},
-    sales: savedState.sales || [],
-    expenses: savedState.expenses || [],
-    insights: savedState.insights || [],
-    inventory: savedState.inventory || {},
-    recipes: savedState.recipes || {},
-    supplierPrices: savedState.supplierPrices || [],
-    trendReports: savedState.trendReports || [],
-    square: savedState.square || null,
-    oauthStates: savedState.oauthStates || {},
-  };
+function requiredDate(value, label) {
+  const text = String(value || "");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text)) throw validationError(`${label} is required`);
+  return text;
 }
 
-function saveState() {
-  fs.mkdirSync(path.dirname(dataPath), { recursive: true });
-  fs.writeFileSync(dataPath, JSON.stringify(state, null, 2));
+function requiredMoney(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) throw validationError(`${label} must be zero or more`);
+  return round(number);
+}
+
+function optionalMoney(value) {
+  if (value === "" || value == null) return 0;
+  return requiredMoney(value, "Amount");
+}
+
+function requiredPositiveNumber(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) throw validationError(`${label} must be greater than zero`);
+  return round(number);
+}
+
+function requiredNonNegativeNumber(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) throw validationError(`${label} must be zero or more`);
+  return round(number);
+}
+
+function optionalNonNegativeNumber(value) {
+  if (value === "" || value == null) return 0;
+  return requiredNonNegativeNumber(value, "Number");
+}
+
+function validationError(message) {
+  const error = new Error(message);
+  error.statusCode = 400;
+  return error;
+}
+
+function dateFromKey(key) {
+  return new Date(`${key}T00:00:00`);
+}
+
+function localDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function sum(items, key) {
   return round(items.reduce((total, item) => total + Number(item[key] || 0), 0));
-}
-
-function centsToDollars(cents = 0) {
-  return round(Number(cents) / 100);
 }
 
 function round(value) {
