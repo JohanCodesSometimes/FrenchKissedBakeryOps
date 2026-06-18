@@ -1,3 +1,4 @@
+const fs = require("fs");
 const path = require("path");
 const { execFile } = require("child_process");
 const { promisify } = require("util");
@@ -11,7 +12,7 @@ const textFirstExtensions = new Set([
 async function convertToMarkdown(filePath, options = {}) {
   const logger = options.logger || console;
   const extension = path.extname(filePath).toLowerCase();
-  const python = options.python || process.env.PYTHON_BIN || (process.platform === "win32" ? "python" : "python3");
+  const python = resolvePython(options.python);
   const script = options.script || path.join(__dirname, "scripts", "convert_to_markdown.py");
   const runner = options.runner || execFileAsync;
 
@@ -47,6 +48,15 @@ async function convertToMarkdown(filePath, options = {}) {
   }
 }
 
+function resolvePython(override) {
+  if (override) return override;
+  const projectPython = process.platform === "win32"
+    ? path.join(__dirname, ".venv", "Scripts", "python.exe")
+    : path.join(__dirname, ".venv", "bin", "python");
+  if (fs.existsSync(projectPython)) return projectPython;
+  return process.env.PYTHON_BIN || (process.platform === "win32" ? "python" : "python3");
+}
+
 function assessMarkdown(markdown) {
   const text = String(markdown || "").replace(/\s+/g, " ").trim();
   const meaningfulCharacters = (text.match(/[\p{L}\p{N}$%]/gu) || []).length;
@@ -65,4 +75,4 @@ function safeErrorName(error) {
   return error?.name || "conversion error";
 }
 
-module.exports = { convertToMarkdown, assessMarkdown, textFirstExtensions };
+module.exports = { convertToMarkdown, assessMarkdown, resolvePython, textFirstExtensions };

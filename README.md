@@ -72,10 +72,10 @@ After Railway redeploys, open Settings and select **Connect Square**. Access and
 
 MarkItDown is used only for PDFs, office documents, CSV, HTML, and text-based uploads. Grocery receipt photos never rely on MarkItDown: JPG, JPEG, PNG, and HEIC uploads go directly to OpenAI Vision. If text conversion fails or returns unusable text, the original document is sent as an OpenAI file input instead. Empty Markdown is never accepted as a successful parse.
 
-Railway's Nixpacks configuration installs Node.js, Python, MarkItDown, FFmpeg, and ExifTool. No extra Railway build command is required. These optional variables are available:
+Railway's Nixpacks configuration installs Node.js, Python, FFmpeg, and ExifTool, creates `.venv`, and installs MarkItDown inside that virtual environment. This avoids Nix's externally-managed system Python restriction. The deployment still starts with `npm start`, and the server automatically discovers `.venv/bin/python`. No extra Railway build command is required.
 
 ```text
-PYTHON_BIN=python3
+PYTHON_BIN=
 MAX_DOCUMENT_UPLOAD_MB=20
 ```
 
