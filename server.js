@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { createStorage } = require("./storage");
 
 const root = __dirname;
 const port = Number(process.env.PORT || 4173);
@@ -11,13 +12,13 @@ const password = process.env.BAKERYOPS_PASSWORD;
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
 const collectionNames = ["expenses", "inventory", "recipes", "sales"];
 
-fs.mkdirSync(dataDir, { recursive: true });
-
-const collections = Object.fromEntries(
-  collectionNames.map((name) => [name, loadCollection(name)]),
-);
-const settings = loadSettings();
-ensureStorageFiles();
+let storage;
+let collections;
+let settings;
+let activity;
+let priceHistory;
+let supplierPrices;
+let trendReports;
 
 const types = {
   ".html": "text/html; charset=utf-8",
@@ -25,13 +26,28 @@ const types = {
   ".js": "application/javascript; charset=utf-8",
 };
 
-http
+async function bootstrap() {
+  storage = await createStorage({ dataDir, env: process.env, logger: console });
+  const state = await storage.initialize();
+  collections = Object.fromEntries(
+    collectionNames.map((name) => [name, (state.collections[name] || []).map((item) => migrateRecord(name, item))]),
+  );
+  settings = { ...defaultSettings(), ...(state.settings || {}) };
+  activity = state.activity || [];
+  priceHistory = state.priceHistory || [];
+  supplierPrices = state.supplierPrices || [];
+  trendReports = state.trendReports || [];
+  startServer();
+}
+
+function startServer() {
+  http
   .createServer(async (req, res) => {
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
       if (url.pathname === "/api/health") {
-        return sendJson(res, 200, { ok: true, dataDir });
+        return sendJson(res, 200, { ok: true, storageMode: storage.mode, dataDir: storage.mode === "json" ? dataDir : null });
       }
 
       if (password && !isAuthorized(req)) return requireLogin(res);
@@ -47,8 +63,34 @@ http
       if (url.pathname === "/api/settings" && req.method === "PUT") {
         const input = await readJsonBody(req);
         Object.assign(settings, sanitizeSettings(input));
-        saveSettings();
+        await saveSettings();
+        await logActivity("settings.updated", "Owner settings updated");
         return sendJson(res, 200, settings);
+      }
+
+      if (url.pathname === "/api/activity" && req.method === "GET") {
+        return sendJson(res, 200, activity);
+      }
+
+      if (url.pathname === "/api/price-history" && req.method === "GET") {
+        return sendJson(res, 200, priceHistory);
+      }
+
+      if (url.pathname === "/api/backup.json" && req.method === "GET") {
+        return exportBackup(res);
+      }
+
+      if (url.pathname === "/api/reports/monthly" && req.method === "GET") {
+        return sendJson(res, 200, buildMonthlyReport(url.searchParams.get("month")));
+      }
+
+      if (url.pathname === "/api/shopping-list" && req.method === "GET") {
+        return sendJson(res, 200, buildShoppingList());
+      }
+
+      const importMatch = url.pathname.match(/^\/api\/import\/(expenses|sales|inventory)$/);
+      if (importMatch && req.method === "POST") {
+        return importRecords(importMatch[1], req, res);
       }
 
       const exportMatch = url.pathname.match(/^\/api\/export\/(expenses|sales)\.csv$/);
@@ -65,6 +107,10 @@ http
       }
 
       const recordMatch = url.pathname.match(/^\/api\/(expenses|sales|inventory|recipes)\/([^/]+)$/);
+      const duplicateMatch = url.pathname.match(/^\/api\/recipes\/([^/]+)\/duplicate$/);
+      if (duplicateMatch && req.method === "POST") {
+        return duplicateRecipe(decodeURIComponent(duplicateMatch[1]), res);
+      }
       if (recordMatch && req.method === "PUT") {
         return updateRecord(recordMatch[1], decodeURIComponent(recordMatch[2]), req, res);
       }
@@ -81,9 +127,16 @@ http
   })
   .listen(port, host, () => {
     console.log(`BakeryOps AI running on ${host}:${port}`);
-    console.log(`Persistent data directory: ${dataDir}`);
+    console.log(`Storage mode: ${storage.mode}`);
+    if (storage.mode === "json") console.log(`Persistent data directory: ${dataDir}`);
     if (!password) console.log("Set BAKERYOPS_PASSWORD to require a login before sharing.");
   });
+}
+
+bootstrap().catch((error) => {
+  console.error(`[startup] ${error.message}`);
+  process.exitCode = 1;
+});
 
 async function createRecord(collectionName, req, res) {
   const input = await readJsonBody(req);
@@ -92,7 +145,9 @@ async function createRecord(collectionName, req, res) {
     createdAt: new Date().toISOString(),
   });
   collections[collectionName].unshift(record);
-  saveCollection(collectionName);
+  await saveCollection(collectionName);
+  if (collectionName === "inventory") await recordIngredientPrice(record, "created");
+  await logActivity(`${collectionName}.created`, `${recordLabel(collectionName, record)} created`);
   sendJson(res, 201, enrichRecord(collectionName, record));
 }
 
@@ -108,16 +163,41 @@ async function updateRecord(collectionName, id, req, res) {
     updatedAt: new Date().toISOString(),
   });
   collections[collectionName][index] = record;
-  saveCollection(collectionName);
+  await saveCollection(collectionName);
+  if (
+    collectionName === "inventory" &&
+    (existing.costPerUnit !== record.costPerUnit || existing.supplier !== record.supplier)
+  ) {
+    await recordIngredientPrice(record, "updated");
+  }
+  await logActivity(`${collectionName}.updated`, `${recordLabel(collectionName, record)} updated`);
   sendJson(res, 200, enrichRecord(collectionName, record));
 }
 
-function deleteRecord(collectionName, id, res) {
+async function deleteRecord(collectionName, id, res) {
   const index = collections[collectionName].findIndex((record) => record.id === id);
   if (index === -1) return sendJson(res, 404, { error: "Record not found" });
-  collections[collectionName].splice(index, 1);
-  saveCollection(collectionName);
+  const [deleted] = collections[collectionName].splice(index, 1);
+  await saveCollection(collectionName);
+  await logActivity(`${collectionName}.deleted`, `${recordLabel(collectionName, deleted)} deleted`);
   sendJson(res, 200, { ok: true });
+}
+
+async function duplicateRecipe(id, res) {
+  const source = collections.recipes.find((recipe) => recipe.id === id);
+  if (!source) return sendJson(res, 404, { error: "Recipe not found" });
+  const copy = {
+    ...source,
+    id: crypto.randomUUID(),
+    recipeName: `${source.recipeName} Copy`,
+    ingredients: source.ingredients.map((ingredient) => ({ ...ingredient })),
+    createdAt: new Date().toISOString(),
+    updatedAt: undefined,
+  };
+  collections.recipes.unshift(copy);
+  await saveCollection("recipes");
+  await logActivity("recipes.duplicated", `${source.recipeName} duplicated`);
+  sendJson(res, 201, enrichRecipe(copy));
 }
 
 function normalizeRecord(collectionName, input, metadata) {
@@ -205,6 +285,159 @@ function normalizeIngredients(value) {
       "Ingredient unit",
     ),
   }));
+}
+
+async function importRecords(collectionName, req, res) {
+  const input = await readJsonBody(req);
+  if (!Array.isArray(input.records) || !input.records.length) {
+    throw validationError("Import contains no records");
+  }
+  if (input.records.length > 1000) throw validationError("Import is limited to 1,000 rows");
+
+  const imported = [];
+  const errors = [];
+  for (const [index, row] of input.records.entries()) {
+    try {
+      const record = normalizeRecord(collectionName, row, {
+        id: crypto.randomUUID(),
+        createdAt: new Date().toISOString(),
+      });
+      collections[collectionName].push(record);
+      imported.push(record);
+      if (collectionName === "inventory") await recordIngredientPrice(record, "imported");
+    } catch (error) {
+      errors.push({ row: index + 2, error: error.message });
+    }
+  }
+
+  if (imported.length) {
+    collections[collectionName].sort((a, b) => String(b.date || b.createdAt).localeCompare(String(a.date || a.createdAt)));
+    await saveCollection(collectionName);
+    await logActivity(
+      `${collectionName}.imported`,
+      `${imported.length} ${collectionName} record${imported.length === 1 ? "" : "s"} imported`,
+    );
+  }
+  sendJson(res, imported.length ? 200 : 400, {
+    imported: imported.length,
+    rejected: errors.length,
+    errors: errors.slice(0, 25),
+  });
+}
+
+function buildMonthlyReport(requestedMonth) {
+  const currentMonth = localDateKey(new Date()).slice(0, 7);
+  const month = /^\d{4}-\d{2}$/.test(requestedMonth || "") ? requestedMonth : currentMonth;
+  const sales = collections.sales.filter((sale) => sale.date.startsWith(month));
+  const expenses = collections.expenses.filter((expense) => expense.date.startsWith(month));
+  const revenue = sum(sales, "saleAmount");
+  const expenseTotal = sum(expenses, "amount");
+  const products = new Map();
+  sales.forEach((sale) => {
+    const item = products.get(sale.product) || { product: sale.product, quantitySold: 0, revenue: 0 };
+    item.quantitySold = round(item.quantitySold + sale.quantitySold);
+    item.revenue = round(item.revenue + sale.saleAmount);
+    products.set(sale.product, item);
+  });
+  const categories = new Map();
+  expenses.forEach((expense) => {
+    categories.set(expense.category, round((categories.get(expense.category) || 0) + expense.amount));
+  });
+  return {
+    month,
+    revenue,
+    expenses: expenseTotal,
+    estimatedProfit: round(revenue - expenseTotal),
+    salesCount: sales.length,
+    expenseCount: expenses.length,
+    topProducts: [...products.values()].sort((a, b) => b.revenue - a.revenue),
+    expenseCategories: [...categories.entries()]
+      .map(([category, amount]) => ({ category, amount }))
+      .sort((a, b) => b.amount - a.amount),
+  };
+}
+
+function buildShoppingList() {
+  const multiplier = Number(settings.shoppingTargetMultiplier || 2);
+  const items = collections.inventory
+    .filter((item) => item.quantity <= item.minimumThreshold)
+    .map((item) => {
+      const targetQuantity = round(item.minimumThreshold * multiplier);
+      const quantityToBuy = round(Math.max(targetQuantity - item.quantity, 0));
+      return {
+        inventoryId: item.id,
+        ingredientName: item.ingredientName,
+        currentQuantity: item.quantity,
+        minimumThreshold: item.minimumThreshold,
+        targetQuantity,
+        quantityToBuy,
+        unit: item.unit,
+        supplier: item.supplier,
+        costPerUnit: item.costPerUnit,
+        estimatedCost: round(quantityToBuy * item.costPerUnit),
+      };
+    });
+  return {
+    targetMultiplier: multiplier,
+    items,
+    estimatedTotal: round(items.reduce((total, item) => total + item.estimatedCost, 0)),
+  };
+}
+
+function exportBackup(res) {
+  const backup = {
+    application: "BakeryOps AI",
+    schemaVersion: 2,
+    exportedAt: new Date().toISOString(),
+    settings,
+    expenses: collections.expenses,
+    inventory: collections.inventory,
+    recipes: collections.recipes,
+    sales: collections.sales,
+    priceHistory,
+    supplierPrices,
+    trendReports,
+    activity,
+  };
+  const stamp = localDateKey(new Date());
+  res.writeHead(200, {
+    "Content-Type": "application/json; charset=utf-8",
+    "Content-Disposition": `attachment; filename="bakeryops-backup-${stamp}.json"`,
+  });
+  res.end(JSON.stringify(backup, null, 2));
+}
+
+async function recordIngredientPrice(item, reason) {
+  if (!(item.costPerUnit > 0)) return;
+  priceHistory.unshift({
+    id: crypto.randomUUID(),
+    inventoryId: item.id,
+    ingredientName: item.ingredientName,
+    supplier: item.supplier,
+    costPerUnit: item.costPerUnit,
+    unit: item.unit,
+    recordedAt: new Date().toISOString(),
+    reason,
+  });
+  await storage.savePriceHistory(priceHistory);
+}
+
+async function logActivity(action, description) {
+  activity.unshift({
+    id: crypto.randomUUID(),
+    action,
+    description,
+    timestamp: new Date().toISOString(),
+  });
+  if (activity.length > 500) activity.length = 500;
+  await storage.saveActivity(activity);
+}
+
+function recordLabel(collectionName, record) {
+  if (collectionName === "expenses") return `Expense from ${record.vendor}`;
+  if (collectionName === "sales") return `Sale for ${record.product}`;
+  if (collectionName === "inventory") return `Inventory item ${record.ingredientName}`;
+  return `Recipe ${record.recipeName}`;
 }
 
 function buildDashboard() {
@@ -358,19 +591,6 @@ function csvCell(value) {
   return `"${String(value ?? "").replaceAll('"', '""')}"`;
 }
 
-function loadCollection(name) {
-  const filePath = collectionPath(name);
-  if (!fs.existsSync(filePath)) return [];
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    if (!Array.isArray(parsed)) return [];
-    return parsed.map((record) => migrateRecord(name, record));
-  } catch (error) {
-    console.error(`Could not load ${filePath}:`, error);
-    return [];
-  }
-}
-
 function migrateRecord(name, record) {
   if (name === "expenses") {
     return { ...record, amount: Number(record.amount ?? record.total ?? 0) };
@@ -405,49 +625,32 @@ function migrateRecord(name, record) {
   };
 }
 
-function loadSettings() {
-  const filePath = path.join(dataDir, "settings.json");
-  if (!fs.existsSync(filePath)) return {};
-  try {
-    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
-  } catch (error) {
-    console.error(`Could not load ${filePath}:`, error);
-    return {};
-  }
-}
-
 function sanitizeSettings(input) {
+  const multiplier = Number(input.shoppingTargetMultiplier);
   return {
     businessName: optionalText(input.businessName),
+    ownerName: optionalText(input.ownerName),
     currency: input.currency === "USD" ? "USD" : "USD",
+    shoppingTargetMultiplier:
+      Number.isFinite(multiplier) && multiplier >= 1 && multiplier <= 10 ? multiplier : 2,
   };
 }
 
-function ensureStorageFiles() {
-  for (const name of collectionNames) {
-    if (!fs.existsSync(collectionPath(name))) saveCollection(name);
-  }
-  const settingsPath = path.join(dataDir, "settings.json");
-  if (!fs.existsSync(settingsPath)) saveSettings();
+function defaultSettings() {
+  return {
+    businessName: "",
+    ownerName: "",
+    currency: "USD",
+    shoppingTargetMultiplier: 2,
+  };
 }
 
-function saveCollection(name) {
-  writeJsonAtomic(collectionPath(name), collections[name]);
+async function saveCollection(name) {
+  await storage.saveCollection(name, collections[name]);
 }
 
-function saveSettings() {
-  writeJsonAtomic(path.join(dataDir, "settings.json"), settings);
-}
-
-function writeJsonAtomic(filePath, value) {
-  const tempPath = `${filePath}.${process.pid}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify(value, null, 2), "utf8");
-  fs.renameSync(tempPath, filePath);
-}
-
-function collectionPath(name) {
-  return path.join(dataDir, `${name}.json`);
+async function saveSettings() {
+  await storage.saveSettings(settings);
 }
 
 function serveStatic(pathname, res) {

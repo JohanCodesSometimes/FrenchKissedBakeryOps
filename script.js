@@ -8,6 +8,9 @@ const numberFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }
 const unitOptions = ["lb", "oz", "g", "kg", "count", "dozen", "gallon"];
 
 let appData = null;
+let appSettings = null;
+let priceHistory = [];
+let activityLog = [];
 let activeView = "dashboard-view";
 
 const viewConfig = {
@@ -16,6 +19,10 @@ const viewConfig = {
   "inventory-view": { title: "Inventory", action: "Add Item", dialog: "inventory-dialog" },
   "recipes-view": { title: "Recipe Library", action: "Create Recipe", dialog: "recipe-dialog" },
   "sales-view": { title: "Sales", action: "Add Sale", dialog: "sale-dialog" },
+  "reports-view": { title: "Monthly Reports" },
+  "shopping-view": { title: "Shopping List" },
+  "activity-view": { title: "Activity Log" },
+  "settings-view": { title: "Owner Settings" },
 };
 
 initialize();
@@ -28,14 +35,25 @@ async function initialize() {
     day: "numeric",
     year: "numeric",
   });
+  document.querySelector("#report-month").value = localDateKey(new Date()).slice(0, 7);
   bindEvents();
-  await refreshDashboard();
+  await refreshAllData();
 }
 
 function bindEvents() {
   document.querySelector("#theme-toggle").addEventListener("click", toggleTheme);
   document.querySelector("#recipe-search").addEventListener("input", renderRecipes);
   document.querySelector("#add-ingredient-row").addEventListener("click", () => addIngredientRow());
+  document.querySelector("#refresh-report").addEventListener("click", refreshReport);
+  document.querySelector("#report-month").addEventListener("change", refreshReport);
+  document.querySelector("#refresh-shopping").addEventListener("click", refreshShoppingList);
+  document.querySelector("#settings-form").addEventListener("submit", saveSettings);
+  document.querySelectorAll("[data-import-type]").forEach((button) => {
+    button.addEventListener("click", () => document.querySelector(`#${button.dataset.importType}-import`).click());
+  });
+  ["expenses", "inventory", "sales"].forEach((type) => {
+    document.querySelector(`#${type}-import`).addEventListener("change", (event) => importCsv(type, event.target.files?.[0]));
+  });
 
   document.addEventListener("click", async (event) => {
     const navButton = event.target.closest("[data-view-target]");
@@ -55,6 +73,9 @@ function bindEvents() {
 
     const recipeButton = event.target.closest("[data-view-recipe]");
     if (recipeButton) return viewRecipe(recipeButton.dataset.viewRecipe);
+
+    const duplicateButton = event.target.closest("[data-duplicate-recipe]");
+    if (duplicateButton) return duplicateRecipe(duplicateButton.dataset.duplicateRecipe);
 
     const removeIngredient = event.target.closest("[data-remove-ingredient]");
     if (removeIngredient) {
@@ -89,9 +110,23 @@ function showView(viewId) {
   const config = viewConfig[viewId];
   document.querySelector("#page-title").textContent = config.title;
   const action = document.querySelector("#page-action");
-  action.textContent = config.action;
-  action.dataset.openDialog = config.dialog;
+  action.hidden = !config.action;
+  if (config.action) {
+    action.textContent = config.action;
+    action.dataset.openDialog = config.dialog;
+  }
   window.scrollTo({ top: 0, behavior: "smooth" });
+}
+
+async function refreshAllData() {
+  await Promise.all([
+    refreshDashboard(),
+    refreshSettings(),
+    refreshPriceHistory(),
+    refreshActivity(),
+    refreshReport(),
+    refreshShoppingList(),
+  ]);
 }
 
 async function refreshDashboard() {
@@ -209,7 +244,7 @@ function renderRecipes() {
       const costing = recipe.allCostsAvailable
         ? `<strong>${money.format(recipe.costPerUnit)}</strong><span>cost per ${escapeHtml(recipe.yieldUnit)}</span>`
         : `<strong>Cost incomplete</strong><span>Add matching inventory costs</span>`;
-      return `<article class="recipe-card"><div><span class="category-label">${escapeHtml(recipe.category)}</span><h2>${escapeHtml(recipe.recipeName)}</h2><p>Yields ${numberFormat.format(recipe.yieldQuantity)} ${escapeHtml(recipe.yieldUnit)}</p></div><div class="recipe-metric">${costing}</div><div class="card-actions"><button class="secondary-button" type="button" data-view-recipe="${recipe.id}">View</button><button class="ghost-button" type="button" data-edit-type="recipes" data-record-id="${recipe.id}">Edit</button><button class="delete-button" type="button" data-delete-type="recipes" data-record-id="${recipe.id}">Delete</button></div></article>`;
+      return `<article class="recipe-card"><div><span class="category-label">${escapeHtml(recipe.category)}</span><h2>${escapeHtml(recipe.recipeName)}</h2><p>Yields ${numberFormat.format(recipe.yieldQuantity)} ${escapeHtml(recipe.yieldUnit)}</p></div><div class="recipe-metric">${costing}</div><div class="card-actions four-actions"><button class="secondary-button" type="button" data-view-recipe="${recipe.id}">View</button><button class="ghost-button" type="button" data-edit-type="recipes" data-record-id="${recipe.id}">Edit</button><button class="ghost-button" type="button" data-duplicate-recipe="${recipe.id}">Duplicate</button><button class="delete-button" type="button" data-delete-type="recipes" data-record-id="${recipe.id}">Delete</button></div></article>`;
     })
     .join("");
 }
@@ -259,7 +294,7 @@ function bindCrudForm(formId, collection, successMessage, payloadBuilder = defau
       if (!response.ok) throw new Error(result.error || "Could not save record");
       form.closest("dialog").close();
       showNotice(successMessage, "success");
-      await refreshDashboard();
+      await refreshAllData();
     } catch (error) {
       showNotice(error.message, "error");
     } finally {
@@ -325,7 +360,7 @@ async function deleteRecord(type, id) {
     const result = await response.json();
     if (!response.ok) throw new Error(result.error || "Could not delete record");
     showNotice("Record deleted", "success");
-    await refreshDashboard();
+    await refreshAllData();
   } catch (error) {
     showNotice(error.message, "error");
   }
@@ -417,6 +452,247 @@ function rowActions(type, id) {
 
 function tableEmpty(columns, title, message = "") {
   return `<tr><td colspan="${columns}"><div class="empty-state table-empty"><strong>${title}</strong>${message ? `<p>${message}</p>` : ""}</div></td></tr>`;
+}
+
+async function refreshSettings() {
+  try {
+    const response = await fetch("/api/settings");
+    if (!response.ok) throw new Error("Could not load settings");
+    appSettings = await response.json();
+    const form = document.querySelector("#settings-form");
+    Object.entries(appSettings).forEach(([key, value]) => {
+      if (form.elements.namedItem(key)) form.elements.namedItem(key).value = value ?? "";
+    });
+    document.querySelector("#brand-name").textContent = appSettings.businessName || "BakeryOps AI";
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+}
+
+async function saveSettings(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  try {
+    const response = await fetch("/api/settings", {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(Object.fromEntries(new FormData(form).entries())),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not save settings");
+    appSettings = result;
+    document.querySelector("#brand-name").textContent = result.businessName || "BakeryOps AI";
+    showNotice("Owner settings saved", "success");
+    await Promise.all([refreshActivity(), refreshShoppingList()]);
+  } catch (error) {
+    showNotice(error.message, "error");
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+async function refreshPriceHistory() {
+  try {
+    const response = await fetch("/api/price-history");
+    if (!response.ok) throw new Error("Could not load price history");
+    priceHistory = await response.json();
+    const body = document.querySelector("#price-history-body");
+    body.innerHTML = priceHistory.length
+      ? priceHistory
+          .slice(0, 100)
+          .map(
+            (item) => `<tr><td>${formatDateTime(item.recordedAt)}</td><td><strong>${escapeHtml(item.ingredientName)}</strong></td><td>${escapeHtml(item.supplier || "Not set")}</td><td>${money.format(item.costPerUnit)} / ${item.unit}</td><td>${titleCase(item.reason)}</td></tr>`,
+          )
+          .join("")
+      : tableEmpty(5, "No ingredient price history yet", "Prices are recorded when inventory costs are added or changed.");
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+}
+
+async function refreshActivity() {
+  try {
+    const response = await fetch("/api/activity");
+    if (!response.ok) throw new Error("Could not load activity");
+    activityLog = await response.json();
+    const container = document.querySelector("#activity-list");
+    container.innerHTML = activityLog.length
+      ? activityLog
+          .map(
+            (item) => `<article class="activity-row"><span class="activity-dot"></span><div><strong>${escapeHtml(item.description)}</strong><span>${formatDateTime(item.timestamp)}</span></div></article>`,
+          )
+          .join("")
+      : '<div class="empty-state"><strong>No activity yet</strong><p>Record changes will appear here.</p></div>';
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+}
+
+async function refreshReport() {
+  const month = document.querySelector("#report-month").value || localDateKey(new Date()).slice(0, 7);
+  try {
+    const response = await fetch(`/api/reports/monthly?month=${encodeURIComponent(month)}`);
+    if (!response.ok) throw new Error("Could not load monthly report");
+    const report = await response.json();
+    setText("#report-revenue", money.format(report.revenue));
+    setText("#report-expenses", money.format(report.expenses));
+    setText("#report-profit", money.format(report.estimatedProfit));
+    renderCompactList(
+      "#report-products",
+      report.topProducts.map((item) => ({
+        title: item.product,
+        detail: `${numberFormat.format(item.quantitySold)} sold`,
+        value: money.format(item.revenue),
+      })),
+      "No sales for this month",
+    );
+    renderCompactList(
+      "#report-categories",
+      report.expenseCategories.map((item) => ({
+        title: item.category,
+        detail: "Recorded expenses",
+        value: money.format(item.amount),
+      })),
+      "No expenses for this month",
+    );
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+}
+
+async function refreshShoppingList() {
+  try {
+    const response = await fetch("/api/shopping-list");
+    if (!response.ok) throw new Error("Could not load shopping list");
+    const list = await response.json();
+    setText("#shopping-total", money.format(list.estimatedTotal));
+    const body = document.querySelector("#shopping-body");
+    body.innerHTML = list.items.length
+      ? list.items
+          .map(
+            (item) => `<tr><td><strong>${escapeHtml(item.ingredientName)}</strong></td><td>${numberFormat.format(item.currentQuantity)} ${item.unit}</td><td>${numberFormat.format(item.quantityToBuy)} ${item.unit}</td><td>${numberFormat.format(item.targetQuantity)} ${item.unit}</td><td>${escapeHtml(item.supplier || "Not set")}</td><td>${money.format(item.estimatedCost)}</td></tr>`,
+          )
+          .join("")
+      : tableEmpty(6, "No shopping items needed", "Items appear when inventory reaches its minimum threshold.");
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+}
+
+async function duplicateRecipe(id) {
+  try {
+    const response = await fetch(`/api/recipes/${encodeURIComponent(id)}/duplicate`, { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not duplicate recipe");
+    showNotice("Recipe duplicated", "success");
+    await Promise.all([refreshDashboard(), refreshActivity()]);
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+}
+
+async function importCsv(type, file) {
+  if (!file) return;
+  const input = document.querySelector(`#${type}-import`);
+  try {
+    const rows = parseCsv(await file.text());
+    if (rows.length < 2) throw new Error("CSV has no data rows");
+    const headers = rows[0].map(normalizeHeader);
+    const records = rows
+      .slice(1)
+      .filter((row) => row.some((cell) => cell.trim()))
+      .map((row) => mapCsvRecord(type, Object.fromEntries(headers.map((header, index) => [header, row[index] || ""]))));
+    const response = await fetch(`/api/import/${type}`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ records }),
+    });
+    const result = await response.json();
+    if (!response.ok && !result.imported) throw new Error(result.error || result.errors?.[0]?.error || "Import failed");
+    const rejected = result.rejected ? `, ${result.rejected} rejected` : "";
+    showNotice(`${result.imported} rows imported${rejected}`, result.rejected ? "info" : "success");
+    await refreshAllData();
+  } catch (error) {
+    showNotice(error.message, "error");
+  } finally {
+    input.value = "";
+  }
+}
+
+function parseCsv(text) {
+  const rows = [];
+  let row = [];
+  let cell = "";
+  let quoted = false;
+  for (let index = 0; index < text.length; index += 1) {
+    const char = text[index];
+    if (quoted) {
+      if (char === '"' && text[index + 1] === '"') {
+        cell += '"';
+        index += 1;
+      } else if (char === '"') quoted = false;
+      else cell += char;
+    } else if (char === '"') quoted = true;
+    else if (char === ",") {
+      row.push(cell);
+      cell = "";
+    } else if (char === "\n") {
+      row.push(cell.replace(/\r$/, ""));
+      rows.push(row);
+      row = [];
+      cell = "";
+    } else cell += char;
+  }
+  if (cell || row.length) {
+    row.push(cell.replace(/\r$/, ""));
+    rows.push(row);
+  }
+  if (rows[0]?.[0]) rows[0][0] = rows[0][0].replace(/^\uFEFF/, "");
+  return rows;
+}
+
+function normalizeHeader(value) {
+  return value.toLowerCase().replace(/[^a-z0-9]/g, "");
+}
+
+function mapCsvRecord(type, row) {
+  if (type === "expenses") {
+    return {
+      date: row.date,
+      vendor: row.vendor,
+      category: row.category === "Miscellaneous" ? "Other" : row.category,
+      amount: row.amount,
+      notes: row.notes,
+    };
+  }
+  if (type === "inventory") {
+    return {
+      ingredientName: row.ingredientname,
+      quantity: row.quantity,
+      unit: row.unit?.toLowerCase(),
+      minimumThreshold: row.minimumthreshold,
+      supplier: row.supplier,
+      costPerUnit: row.costperunit,
+    };
+  }
+  return {
+    date: row.date,
+    product: row.product,
+    quantitySold: row.quantitysold,
+    saleAmount: row.saleamount,
+  };
+}
+
+function formatDateTime(value) {
+  return new Date(value).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
 }
 
 function applySavedTheme() {

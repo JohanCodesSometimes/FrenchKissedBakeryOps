@@ -20,6 +20,10 @@
           <button type="button" data-view-target="inventory-view">Inventory</button>
           <button type="button" data-view-target="recipes-view">Recipes</button>
           <button type="button" data-view-target="sales-view">Sales</button>
+          <button type="button" data-view-target="reports-view">Reports</button>
+          <button type="button" data-view-target="shopping-view">Shopping</button>
+          <button type="button" data-view-target="activity-view">Activity</button>
+          <button type="button" data-view-target="settings-view">Settings</button>
         </nav>
         <div class="role-card"><span>Private workspace</span><strong>Owner</strong><p>Persistent data is stored in the secured Railway volume.</p></div>
       </aside>
@@ -70,7 +74,7 @@
         <section class="page-view" id="expenses-view" hidden>
           <div class="section-toolbar">
             <div class="summary-stat"><span>Monthly Expense Total</span><strong id="expense-page-total">$0.00</strong></div>
-            <div class="panel-actions"><a class="ghost-button link-button" href="/api/export/expenses.csv">Export CSV</a><button class="primary-button" type="button" data-open-dialog="expense-dialog">Add Expense</button></div>
+            <div class="panel-actions"><input id="expenses-import" type="file" accept=".csv,text/csv" hidden /><button class="ghost-button" type="button" data-import-type="expenses">Import CSV</button><a class="ghost-button link-button" href="/api/export/expenses.csv">Export CSV</a><button class="primary-button" type="button" data-open-dialog="expense-dialog">Add Expense</button></div>
           </div>
           <article class="panel">
             <div class="panel-header"><div><p class="eyebrow">Expense management</p><h2>Expense table</h2></div></div>
@@ -79,10 +83,14 @@
         </section>
 
         <section class="page-view" id="inventory-view" hidden>
-          <div class="section-toolbar"><div class="summary-stat"><span>Low Stock Alerts</span><strong id="inventory-alert-total">0</strong></div><button class="primary-button" type="button" data-open-dialog="inventory-dialog">Add Item</button></div>
+          <div class="section-toolbar"><div class="summary-stat"><span>Low Stock Alerts</span><strong id="inventory-alert-total">0</strong></div><div class="panel-actions"><input id="inventory-import" type="file" accept=".csv,text/csv" hidden /><button class="ghost-button" type="button" data-import-type="inventory">Import CSV</button><button class="primary-button" type="button" data-open-dialog="inventory-dialog">Add Item</button></div></div>
           <article class="panel">
             <div class="panel-header"><div><p class="eyebrow">Inventory management</p><h2>Ingredient inventory</h2></div></div>
             <div class="table-wrap"><table><thead><tr><th>Ingredient</th><th>Quantity</th><th>Threshold</th><th>Supplier</th><th>Cost/Unit</th><th>Status</th><th>Actions</th></tr></thead><tbody id="inventory-body"><tr><td colspan="7"><div class="empty-state table-empty"><strong>No inventory items added yet</strong><p>Add the first ingredient to begin tracking stock.</p></div></td></tr></tbody></table></div>
+          </article>
+          <article class="panel section-gap">
+            <div class="panel-header"><div><p class="eyebrow">Ingredient pricing</p><h2>Price history</h2></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Ingredient</th><th>Supplier</th><th>Price</th><th>Reason</th></tr></thead><tbody id="price-history-body"><tr><td colspan="5"><div class="empty-state table-empty"><strong>No ingredient price history yet</strong><p>Prices are recorded when inventory costs are added or changed.</p></div></td></tr></tbody></table></div>
           </article>
         </section>
 
@@ -97,7 +105,7 @@
             <article class="metric-card"><span>Weekly Revenue</span><strong id="sales-weekly">$0.00</strong></article>
             <article class="metric-card"><span>Monthly Revenue</span><strong id="sales-monthly">$0.00</strong></article>
           </div>
-          <div class="section-toolbar"><div></div><div class="panel-actions"><a class="ghost-button link-button" href="/api/export/sales.csv">Export CSV</a><button class="primary-button" type="button" data-open-dialog="sale-dialog">Add Sale</button></div></div>
+          <div class="section-toolbar"><div></div><div class="panel-actions"><input id="sales-import" type="file" accept=".csv,text/csv" hidden /><button class="ghost-button" type="button" data-import-type="sales">Import CSV</button><a class="ghost-button link-button" href="/api/export/sales.csv">Export CSV</a><button class="primary-button" type="button" data-open-dialog="sale-dialog">Add Sale</button></div></div>
           <article class="panel">
             <div class="panel-header"><div><p class="eyebrow">Sales tracking</p><h2>Sales table</h2></div></div>
             <div class="table-wrap"><table><thead><tr><th>Date</th><th>Product</th><th>Quantity</th><th>Sale Amount</th><th>Actions</th></tr></thead><tbody id="sales-body"><tr><td colspan="5"><div class="empty-state table-empty"><strong>No sales recorded yet</strong><p>Add the first sale to begin tracking revenue.</p></div></td></tr></tbody></table></div>
@@ -106,6 +114,28 @@
             <div class="panel-header"><div><p class="eyebrow">Product performance</p><h2>Products by revenue</h2></div></div>
             <div class="table-wrap"><table><thead><tr><th>Product</th><th>Quantity Sold</th><th>Revenue</th></tr></thead><tbody id="performance-body"><tr><td colspan="3"><div class="empty-state table-empty"><strong>No sales recorded yet</strong></div></td></tr></tbody></table></div>
           </article>
+        </section>
+
+        <section class="page-view" id="reports-view" hidden>
+          <div class="section-toolbar"><label class="search-field month-field"><span>Report month</span><input id="report-month" type="month" /></label><button class="secondary-button" id="refresh-report" type="button">Refresh Report</button></div>
+          <div class="metrics-grid sales-metrics"><article class="metric-card"><span>Revenue</span><strong id="report-revenue">$0.00</strong></article><article class="metric-card"><span>Expenses</span><strong id="report-expenses">$0.00</strong></article><article class="metric-card highlight"><span>Estimated Profit</span><strong id="report-profit">$0.00</strong></article></div>
+          <div class="dashboard-grid"><article class="panel"><div class="panel-header"><div><p class="eyebrow">Monthly report</p><h2>Top products</h2></div></div><div id="report-products" class="record-list compact"><div class="empty-state"><strong>No sales for this month</strong></div></div></article><article class="panel"><div class="panel-header"><div><p class="eyebrow">Monthly report</p><h2>Expenses by category</h2></div></div><div id="report-categories" class="record-list compact"><div class="empty-state"><strong>No expenses for this month</strong></div></div></article></div>
+        </section>
+
+        <section class="page-view" id="shopping-view" hidden>
+          <div class="section-toolbar"><div class="summary-stat"><span>Estimated Shopping Total</span><strong id="shopping-total">$0.00</strong></div><button class="secondary-button" id="refresh-shopping" type="button">Refresh List</button></div>
+          <article class="panel"><div class="panel-header"><div><p class="eyebrow">Shopping list generator</p><h2>Low-stock purchase recommendations</h2></div></div><div class="table-wrap"><table><thead><tr><th>Ingredient</th><th>Current</th><th>Buy</th><th>Target</th><th>Supplier</th><th>Estimated Cost</th></tr></thead><tbody id="shopping-body"><tr><td colspan="6"><div class="empty-state table-empty"><strong>No shopping items needed</strong><p>Items appear when inventory reaches its minimum threshold.</p></div></td></tr></tbody></table></div></article>
+        </section>
+
+        <section class="page-view" id="activity-view" hidden>
+          <article class="panel"><div class="panel-header"><div><p class="eyebrow">Audit trail</p><h2>Recent activity</h2></div></div><div id="activity-list" class="activity-list"><div class="empty-state"><strong>No activity yet</strong><p>Record changes will appear here.</p></div></div></article>
+        </section>
+
+        <section class="page-view" id="settings-view" hidden>
+          <div class="settings-grid">
+            <article class="panel"><div class="panel-header"><div><p class="eyebrow">Owner settings</p><h2>Business preferences</h2></div></div><form id="settings-form" class="settings-form"><label>Business Name<input name="businessName" type="text" maxlength="120" /></label><label>Owner Name<input name="ownerName" type="text" maxlength="120" /></label><label>Currency<select name="currency"><option value="USD">USD - US Dollar</option></select></label><label>Shopping Target Multiplier<input name="shoppingTargetMultiplier" type="number" min="1" max="10" step="0.5" /></label><button class="primary-button" type="submit">Save Settings</button></form></article>
+            <article class="panel"><div class="panel-header"><div><p class="eyebrow">Backup</p><h2>Export all data</h2></div></div><p class="settings-copy">Download one JSON file containing settings, expenses, inventory, recipes, sales, price history, and activity.</p><a class="primary-button link-button full-width-button" href="/api/backup.json">Download Backup</a><div class="import-help"><strong>CSV column names</strong><p>Expenses: Date, Vendor, Category, Amount, Notes</p><p>Inventory: Ingredient Name, Quantity, Unit, Minimum Threshold, Supplier, Cost Per Unit</p><p>Sales: Date, Product, Quantity Sold, Sale Amount</p></div></article>
+          </div>
         </section>
       </main>
     </div>
