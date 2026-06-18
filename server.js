@@ -9,13 +9,15 @@ const host = process.env.HOST || "0.0.0.0";
 const username = process.env.BAKERYOPS_USER || "owner";
 const password = process.env.BAKERYOPS_PASSWORD;
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
+const collectionNames = ["expenses", "inventory", "recipes", "sales"];
 
-const collections = {
-  expenses: loadCollection("expenses"),
-  sales: loadCollection("sales"),
-  inventory: loadCollection("inventory"),
-  recipes: loadCollection("recipes"),
-};
+fs.mkdirSync(dataDir, { recursive: true });
+
+const collections = Object.fromEntries(
+  collectionNames.map((name) => [name, loadCollection(name)]),
+);
+const settings = loadSettings();
+ensureStorageFiles();
 
 const types = {
   ".html": "text/html; charset=utf-8",
@@ -38,19 +40,36 @@ http
         return sendJson(res, 200, buildDashboard());
       }
 
+      if (url.pathname === "/api/settings" && req.method === "GET") {
+        return sendJson(res, 200, settings);
+      }
+
+      if (url.pathname === "/api/settings" && req.method === "PUT") {
+        const input = await readJsonBody(req);
+        Object.assign(settings, sanitizeSettings(input));
+        saveSettings();
+        return sendJson(res, 200, settings);
+      }
+
       const exportMatch = url.pathname.match(/^\/api\/export\/(expenses|sales)\.csv$/);
       if (exportMatch && req.method === "GET") {
         return exportCsv(res, exportMatch[1]);
       }
 
       const collectionMatch = url.pathname.match(/^\/api\/(expenses|sales|inventory|recipes)$/);
+      if (collectionMatch && req.method === "GET") {
+        return sendJson(res, 200, collections[collectionMatch[1]]);
+      }
       if (collectionMatch && req.method === "POST") {
         return createRecord(collectionMatch[1], req, res);
       }
 
-      const deleteMatch = url.pathname.match(/^\/api\/(expenses|sales|inventory|recipes)\/([^/]+)$/);
-      if (deleteMatch && req.method === "DELETE") {
-        return deleteRecord(deleteMatch[1], decodeURIComponent(deleteMatch[2]), res);
+      const recordMatch = url.pathname.match(/^\/api\/(expenses|sales|inventory|recipes)\/([^/]+)$/);
+      if (recordMatch && req.method === "PUT") {
+        return updateRecord(recordMatch[1], decodeURIComponent(recordMatch[2]), req, res);
+      }
+      if (recordMatch && req.method === "DELETE") {
+        return deleteRecord(recordMatch[1], decodeURIComponent(recordMatch[2]), res);
       }
 
       return serveStatic(url.pathname, res);
@@ -68,76 +87,124 @@ http
 
 async function createRecord(collectionName, req, res) {
   const input = await readJsonBody(req);
-  const record = normalizeRecord(collectionName, input);
+  const record = normalizeRecord(collectionName, input, {
+    id: crypto.randomUUID(),
+    createdAt: new Date().toISOString(),
+  });
   collections[collectionName].unshift(record);
   saveCollection(collectionName);
-  sendJson(res, 201, record);
+  sendJson(res, 201, enrichRecord(collectionName, record));
+}
+
+async function updateRecord(collectionName, id, req, res) {
+  const index = collections[collectionName].findIndex((record) => record.id === id);
+  if (index === -1) return sendJson(res, 404, { error: "Record not found" });
+
+  const input = await readJsonBody(req);
+  const existing = collections[collectionName][index];
+  const record = normalizeRecord(collectionName, input, {
+    id: existing.id,
+    createdAt: existing.createdAt,
+    updatedAt: new Date().toISOString(),
+  });
+  collections[collectionName][index] = record;
+  saveCollection(collectionName);
+  sendJson(res, 200, enrichRecord(collectionName, record));
 }
 
 function deleteRecord(collectionName, id, res) {
   const index = collections[collectionName].findIndex((record) => record.id === id);
   if (index === -1) return sendJson(res, 404, { error: "Record not found" });
-
   collections[collectionName].splice(index, 1);
   saveCollection(collectionName);
   sendJson(res, 200, { ok: true });
 }
 
-function normalizeRecord(collectionName, input) {
-  const common = {
-    id: crypto.randomUUID(),
-    createdAt: new Date().toISOString(),
-  };
-
+function normalizeRecord(collectionName, input, metadata) {
   if (collectionName === "expenses") {
     return {
-      ...common,
+      ...metadata,
       date: requiredDate(input.date, "Expense date"),
       vendor: requiredText(input.vendor, "Vendor"),
-      category: requiredText(input.category, "Category"),
-      total: requiredMoney(input.total, "Total"),
-      tax: optionalMoney(input.tax),
+      category: allowedValue(
+        input.category,
+        ["Ingredients", "Packaging", "Equipment", "Utilities", "Other"],
+        "Category",
+      ),
+      amount: requiredMoney(input.amount ?? input.total, "Amount"),
       notes: optionalText(input.notes),
-      source: "manual",
     };
   }
 
   if (collectionName === "sales") {
     return {
-      ...common,
+      ...metadata,
       date: requiredDate(input.date, "Sale date"),
-      productName: requiredText(input.productName, "Product name"),
-      quantity: requiredPositiveNumber(input.quantity, "Quantity"),
-      total: requiredMoney(input.total, "Total"),
-      tax: optionalMoney(input.tax),
-      discounts: optionalMoney(input.discounts),
-      notes: optionalText(input.notes),
-      source: "manual",
+      product: requiredText(input.product ?? input.productName, "Product"),
+      quantitySold: requiredPositiveNumber(input.quantitySold ?? input.quantity, "Quantity sold"),
+      saleAmount: requiredMoney(input.saleAmount ?? input.total, "Sale amount"),
     };
   }
 
   if (collectionName === "inventory") {
     return {
-      ...common,
-      name: requiredText(input.name, "Ingredient name"),
-      currentQuantity: requiredNonNegativeNumber(input.currentQuantity, "Current quantity"),
-      unit: requiredText(input.unit, "Unit"),
+      ...metadata,
+      ingredientName: requiredText(input.ingredientName ?? input.name, "Ingredient name"),
+      quantity: requiredNonNegativeNumber(input.quantity ?? input.currentQuantity, "Quantity"),
+      unit: allowedValue(
+        input.unit,
+        ["lb", "oz", "g", "kg", "count", "dozen", "gallon"],
+        "Unit",
+      ),
       minimumThreshold: requiredNonNegativeNumber(input.minimumThreshold, "Minimum threshold"),
-      averageWeeklyUsage: optionalNonNegativeNumber(input.averageWeeklyUsage),
+      supplier: optionalText(input.supplier),
+      costPerUnit: requiredNonNegativeNumber(input.costPerUnit ?? 0, "Cost per unit"),
     };
   }
 
+  const ingredients = normalizeIngredients(input.ingredients);
   return {
-    ...common,
-    name: requiredText(input.name, "Recipe name"),
-    category: optionalText(input.category),
+    ...metadata,
+    recipeName: requiredText(input.recipeName ?? input.name, "Recipe name"),
+    category: allowedValue(
+      input.category,
+      ["Cookies", "Cakes", "Cupcakes", "Brownies", "Pastries", "Custom"],
+      "Category",
+    ),
     yieldQuantity: requiredPositiveNumber(input.yieldQuantity, "Yield quantity"),
     yieldUnit: requiredText(input.yieldUnit, "Yield unit"),
-    sellingPrice: optionalMoney(input.sellingPrice),
-    totalCost: optionalMoney(input.totalCost),
-    ingredients: optionalText(input.ingredients),
-    notes: optionalText(input.notes),
+    sellingPrice: requiredNonNegativeNumber(input.sellingPrice ?? 0, "Selling price"),
+    preparationNotes: optionalText(input.preparationNotes ?? input.notes),
+    ingredients,
   };
+}
+
+function normalizeIngredients(value) {
+  let ingredients = value;
+  if (typeof value === "string") {
+    try {
+      ingredients = JSON.parse(value);
+    } catch {
+      ingredients = [];
+    }
+  }
+  if (!Array.isArray(ingredients) || !ingredients.length) {
+    throw validationError("Add at least one recipe ingredient");
+  }
+
+  return ingredients.map((ingredient) => ({
+    inventoryId: optionalText(ingredient.inventoryId),
+    ingredientName: requiredText(
+      ingredient.ingredientName ?? ingredient.name,
+      "Ingredient name",
+    ),
+    quantity: requiredPositiveNumber(ingredient.quantity, "Ingredient quantity"),
+    unit: allowedValue(
+      ingredient.unit,
+      ["lb", "oz", "g", "kg", "count", "dozen", "gallon"],
+      "Ingredient unit",
+    ),
+  }));
 }
 
 function buildDashboard() {
@@ -151,77 +218,135 @@ function buildDashboard() {
   const todaySales = collections.sales.filter((sale) => sale.date === todayKey);
   const weekSales = collections.sales.filter((sale) => dateFromKey(sale.date) >= weekStart);
   const monthSales = collections.sales.filter((sale) => sale.date.startsWith(monthKey));
-  const todayExpenses = collections.expenses.filter((expense) => expense.date === todayKey);
-  const weekExpenses = collections.expenses.filter((expense) => dateFromKey(expense.date) >= weekStart);
   const monthExpenses = collections.expenses.filter((expense) => expense.date.startsWith(monthKey));
-  const monthRevenue = sum(monthSales, "total");
-  const monthExpenseTotal = sum(monthExpenses, "total");
-  const inventoryById = Object.fromEntries(collections.inventory.map((item) => [item.id, item]));
+  const monthRevenue = sum(monthSales, "saleAmount");
+  const monthExpenseTotal = sum(monthExpenses, "amount");
   const lowStock = collections.inventory.filter(
-    (item) => item.currentQuantity <= item.minimumThreshold,
+    (item) => item.quantity <= item.minimumThreshold,
   );
 
   return {
     financials: {
-      revenueToday: sum(todaySales, "total"),
-      revenueThisWeek: sum(weekSales, "total"),
+      revenueToday: sum(todaySales, "saleAmount"),
+      revenueThisWeek: sum(weekSales, "saleAmount"),
       revenueThisMonth: monthRevenue,
-      expensesToday: sum(todayExpenses, "total"),
-      expensesThisWeek: sum(weekExpenses, "total"),
       expensesThisMonth: monthExpenseTotal,
-      netProfit: round(monthRevenue - monthExpenseTotal),
-      profitMargin: monthRevenue
-        ? round(((monthRevenue - monthExpenseTotal) / monthRevenue) * 100)
-        : 0,
+      estimatedProfit: round(monthRevenue - monthExpenseTotal),
+    },
+    counts: {
+      expenses: collections.expenses.length,
+      sales: collections.sales.length,
+      inventory: collections.inventory.length,
+      recipes: collections.recipes.length,
     },
     expenses: collections.expenses,
     sales: collections.sales,
-    inventory: { alerts: lowStock.length, lowStock, all: inventoryById },
-    recipes: collections.recipes,
-    productMetrics: buildProductMetrics(),
+    inventory: { alerts: lowStock.length, lowStock, all: collections.inventory },
+    recipes: collections.recipes.map((recipe) => enrichRecipe(recipe)),
+    productPerformance: buildProductPerformance(),
     updatedAt: new Date().toISOString(),
   };
 }
 
-function buildProductMetrics() {
+function buildProductPerformance() {
   const totals = new Map();
   for (const sale of collections.sales) {
-    const current = totals.get(sale.productName) || {
-      name: sale.productName,
+    const current = totals.get(sale.product) || {
+      product: sale.product,
+      quantitySold: 0,
       revenue: 0,
-      quantity: 0,
     };
-    current.revenue = round(current.revenue + sale.total);
-    current.quantity = round(current.quantity + sale.quantity);
-    totals.set(sale.productName, current);
+    current.quantitySold = round(current.quantitySold + sale.quantitySold);
+    current.revenue = round(current.revenue + sale.saleAmount);
+    totals.set(sale.product, current);
   }
+  return [...totals.values()].sort((a, b) => b.revenue - a.revenue);
+}
+
+function enrichRecord(collectionName, record) {
+  return collectionName === "recipes" ? enrichRecipe(record) : record;
+}
+
+function enrichRecipe(recipe) {
+  const breakdown = recipe.ingredients.map((ingredient) => {
+    const inventoryItem = findInventoryItem(ingredient);
+    const cost = inventoryItem ? calculateIngredientCost(ingredient, inventoryItem) : null;
+    return {
+      ...ingredient,
+      inventoryItemId: inventoryItem?.id || null,
+      inventoryUnit: inventoryItem?.unit || null,
+      costPerInventoryUnit: inventoryItem?.costPerUnit ?? null,
+      cost,
+      costAvailable: cost !== null,
+    };
+  });
+  const pricedIngredients = breakdown.filter((item) => item.costAvailable);
+  const pricedSubtotal = round(pricedIngredients.reduce((total, item) => total + item.cost, 0));
+  const allCostsAvailable = pricedIngredients.length === breakdown.length;
+  const totalRecipeCost = allCostsAvailable ? pricedSubtotal : null;
+  const costPerUnit = allCostsAvailable && recipe.yieldQuantity
+    ? round(totalRecipeCost / recipe.yieldQuantity)
+    : null;
+  const profitPerUnit = allCostsAvailable ? round(recipe.sellingPrice - costPerUnit) : null;
+  const profitMargin = allCostsAvailable && recipe.sellingPrice
+    ? round((profitPerUnit / recipe.sellingPrice) * 100)
+    : allCostsAvailable ? 0 : null;
 
   return {
-    topSelling: [...totals.values()].sort((a, b) => b.revenue - a.revenue),
+    ...recipe,
+    costBreakdown: breakdown,
+    totalRecipeCost,
+    pricedSubtotal,
+    costPerUnit,
+    profitPerUnit,
+    profitMargin,
+    allCostsAvailable,
   };
+}
+
+function findInventoryItem(ingredient) {
+  if (ingredient.inventoryId) {
+    const byId = collections.inventory.find((item) => item.id === ingredient.inventoryId);
+    if (byId) return byId;
+  }
+  return collections.inventory.find(
+    (item) => item.ingredientName.toLowerCase() === ingredient.ingredientName.toLowerCase(),
+  );
+}
+
+function calculateIngredientCost(ingredient, inventoryItem) {
+  const ingredientUnit = unitDefinition(ingredient.unit);
+  const inventoryUnit = unitDefinition(inventoryItem.unit);
+  if (!ingredientUnit || !inventoryUnit || ingredientUnit.group !== inventoryUnit.group) return null;
+  const inventoryUnitsUsed =
+    (ingredient.quantity * ingredientUnit.factor) / inventoryUnit.factor;
+  return round(inventoryUnitsUsed * inventoryItem.costPerUnit);
+}
+
+function unitDefinition(unit) {
+  const units = {
+    g: { group: "mass", factor: 1 },
+    kg: { group: "mass", factor: 1000 },
+    oz: { group: "mass", factor: 28.349523125 },
+    lb: { group: "mass", factor: 453.59237 },
+    count: { group: "count", factor: 1 },
+    dozen: { group: "count", factor: 12 },
+    gallon: { group: "volume", factor: 1 },
+  };
+  return units[unit] || null;
 }
 
 function exportCsv(res, collectionName) {
   const isExpenses = collectionName === "expenses";
   const headers = isExpenses
-    ? ["Date", "Vendor", "Category", "Total", "Tax", "Notes", "Source"]
-    : ["Date", "Product", "Quantity", "Total", "Tax", "Discounts", "Notes", "Source"];
+    ? ["Date", "Vendor", "Category", "Amount", "Notes"]
+    : ["Date", "Product", "Quantity Sold", "Sale Amount"];
   const rows = collections[collectionName].map((record) =>
     isExpenses
-      ? [record.date, record.vendor, record.category, record.total, record.tax, record.notes, record.source]
-      : [
-          record.date,
-          record.productName,
-          record.quantity,
-          record.total,
-          record.tax,
-          record.discounts,
-          record.notes,
-          record.source,
-        ],
+      ? [record.date, record.vendor, record.category, record.amount, record.notes]
+      : [record.date, record.product, record.quantitySold, record.saleAmount],
   );
   const csv = [headers, ...rows].map((row) => row.map(csvCell).join(",")).join("\r\n");
-
   res.writeHead(200, {
     "Content-Type": "text/csv; charset=utf-8",
     "Content-Disposition": `attachment; filename="bakeryops-${collectionName}.csv"`,
@@ -230,29 +355,94 @@ function exportCsv(res, collectionName) {
 }
 
 function csvCell(value) {
-  const text = String(value ?? "");
-  return `"${text.replaceAll('"', '""')}"`;
+  return `"${String(value ?? "").replaceAll('"', '""')}"`;
 }
 
 function loadCollection(name) {
-  fs.mkdirSync(dataDir, { recursive: true });
   const filePath = collectionPath(name);
   if (!fs.existsSync(filePath)) return [];
-
   try {
     const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
-    return Array.isArray(parsed) ? parsed : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((record) => migrateRecord(name, record));
   } catch (error) {
     console.error(`Could not load ${filePath}:`, error);
     return [];
   }
 }
 
+function migrateRecord(name, record) {
+  if (name === "expenses") {
+    return { ...record, amount: Number(record.amount ?? record.total ?? 0) };
+  }
+  if (name === "sales") {
+    return {
+      ...record,
+      product: record.product ?? record.productName ?? "",
+      quantitySold: Number(record.quantitySold ?? record.quantity ?? 0),
+      saleAmount: Number(record.saleAmount ?? record.total ?? 0),
+    };
+  }
+  if (name === "inventory") {
+    return {
+      ...record,
+      ingredientName: record.ingredientName ?? record.name ?? "",
+      quantity: Number(record.quantity ?? record.currentQuantity ?? 0),
+      costPerUnit: Number(record.costPerUnit ?? 0),
+    };
+  }
+  return {
+    ...record,
+    recipeName: record.recipeName ?? record.name ?? "",
+    preparationNotes: record.preparationNotes ?? record.notes ?? "",
+    ingredients: Array.isArray(record.ingredients)
+      ? record.ingredients.map((ingredient) => ({
+          ...ingredient,
+          ingredientName: ingredient.ingredientName ?? ingredient.name ?? "",
+          inventoryId: ingredient.inventoryId ?? "",
+        }))
+      : [],
+  };
+}
+
+function loadSettings() {
+  const filePath = path.join(dataDir, "settings.json");
+  if (!fs.existsSync(filePath)) return {};
+  try {
+    const parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  } catch (error) {
+    console.error(`Could not load ${filePath}:`, error);
+    return {};
+  }
+}
+
+function sanitizeSettings(input) {
+  return {
+    businessName: optionalText(input.businessName),
+    currency: input.currency === "USD" ? "USD" : "USD",
+  };
+}
+
+function ensureStorageFiles() {
+  for (const name of collectionNames) {
+    if (!fs.existsSync(collectionPath(name))) saveCollection(name);
+  }
+  const settingsPath = path.join(dataDir, "settings.json");
+  if (!fs.existsSync(settingsPath)) saveSettings();
+}
+
 function saveCollection(name) {
-  fs.mkdirSync(dataDir, { recursive: true });
-  const filePath = collectionPath(name);
-  const tempPath = `${filePath}.tmp`;
-  fs.writeFileSync(tempPath, JSON.stringify(collections[name], null, 2), "utf8");
+  writeJsonAtomic(collectionPath(name), collections[name]);
+}
+
+function saveSettings() {
+  writeJsonAtomic(path.join(dataDir, "settings.json"), settings);
+}
+
+function writeJsonAtomic(filePath, value) {
+  const tempPath = `${filePath}.${process.pid}.tmp`;
+  fs.writeFileSync(tempPath, JSON.stringify(value, null, 2), "utf8");
   fs.renameSync(tempPath, filePath);
 }
 
@@ -268,13 +458,11 @@ function serveStatic(pathname, res) {
     path.join(root, "styles.css"),
     path.join(root, "script.js"),
   ]);
-
   if (!allowedFiles.has(filePath)) {
     res.writeHead(404);
     res.end("Not found");
     return;
   }
-
   fs.readFile(filePath, (error, body) => {
     if (error) {
       res.writeHead(404);
@@ -290,8 +478,7 @@ function isAuthorized(req) {
   const header = req.headers.authorization || "";
   const [scheme, encoded] = header.split(" ");
   if (scheme !== "Basic" || !encoded) return false;
-  const credentials = Buffer.from(encoded, "base64").toString("utf8");
-  return credentials === `${username}:${password}`;
+  return Buffer.from(encoded, "base64").toString("utf8") === `${username}:${password}`;
 }
 
 function requireLogin(res) {
@@ -314,7 +501,7 @@ function readJsonBody(req) {
     req.on("data", (chunk) => {
       size += chunk.length;
       if (size > 1_000_000) {
-        const error = new Error("Request body is too large");
+        const error = validationError("Request body is too large");
         error.statusCode = 413;
         reject(error);
         req.destroy();
@@ -327,9 +514,7 @@ function readJsonBody(req) {
         const text = Buffer.concat(chunks).toString("utf8");
         resolve(text ? JSON.parse(text) : {});
       } catch {
-        const error = new Error("Invalid JSON body");
-        error.statusCode = 400;
-        reject(error);
+        reject(validationError("Invalid JSON body"));
       }
     });
     req.on("error", reject);
@@ -352,15 +537,13 @@ function requiredDate(value, label) {
   return text;
 }
 
-function requiredMoney(value, label) {
-  const number = Number(value);
-  if (!Number.isFinite(number) || number < 0) throw validationError(`${label} must be zero or more`);
-  return round(number);
+function allowedValue(value, allowed, label) {
+  if (!allowed.includes(value)) throw validationError(`${label} is invalid`);
+  return value;
 }
 
-function optionalMoney(value) {
-  if (value === "" || value == null) return 0;
-  return requiredMoney(value, "Amount");
+function requiredMoney(value, label) {
+  return requiredNonNegativeNumber(value, label);
 }
 
 function requiredPositiveNumber(value, label) {
@@ -373,11 +556,6 @@ function requiredNonNegativeNumber(value, label) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) throw validationError(`${label} must be zero or more`);
   return round(number);
-}
-
-function optionalNonNegativeNumber(value) {
-  if (value === "" || value == null) return 0;
-  return requiredNonNegativeNumber(value, "Number");
 }
 
 function validationError(message) {
