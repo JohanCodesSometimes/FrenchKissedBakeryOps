@@ -4,12 +4,14 @@
   "private": true,
   "description": "Private BakeryOps AI frontend prototype.",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "test": "node --test"
   },
   "engines": {
     "node": ">=20"
   },
   "dependencies": {
-    "@supabase/supabase-js": "^2.108.2"
+    "@supabase/supabase-js": "^2.108.2",
+    "sharp": "^0.35.1"
   }
 }

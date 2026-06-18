@@ -11,11 +11,13 @@ let appData = null;
 let appSettings = null;
 let priceHistory = [];
 let activityLog = [];
+let receiptsData = [];
 let activeView = "dashboard-view";
 
 const viewConfig = {
   "dashboard-view": { title: "Dashboard", action: "Add Sale", dialog: "sale-dialog" },
   "expenses-view": { title: "Expenses", action: "Add Expense", dialog: "expense-dialog" },
+  "receipts-view": { title: "Receipts" },
   "inventory-view": { title: "Inventory", action: "Add Item", dialog: "inventory-dialog" },
   "recipes-view": { title: "Recipe Library", action: "Create Recipe", dialog: "recipe-dialog" },
   "sales-view": { title: "Sales", action: "Add Sale", dialog: "sale-dialog" },
@@ -48,6 +50,15 @@ function bindEvents() {
   document.querySelector("#report-month").addEventListener("change", refreshReport);
   document.querySelector("#refresh-shopping").addEventListener("click", refreshShoppingList);
   document.querySelector("#settings-form").addEventListener("submit", saveSettings);
+  document.querySelector("#square-disconnect").addEventListener("click", disconnectSquare);
+  document.querySelector("#receipt-upload-button").addEventListener("click", (event) => {
+    event.stopPropagation();
+    document.querySelector("#receipt-upload").click();
+  });
+  document.querySelector("#receipt-upload").addEventListener("change", (event) => parseReceipt(event.target.files?.[0]));
+  document.querySelector("#receipt-review-form").addEventListener("submit", approveReceipt);
+  document.querySelector("#cancel-receipt-review").addEventListener("click", cancelReceiptReview);
+  bindReceiptDropZone();
   document.querySelectorAll("[data-import-type]").forEach((button) => {
     button.addEventListener("click", () => document.querySelector(`#${button.dataset.importType}-import`).click());
   });
@@ -96,6 +107,163 @@ function bindEvents() {
   bindCrudForm("recipe-form", "recipes", "Recipe saved", buildRecipePayload);
 }
 
+async function parseReceipt(file) {
+  if (!file) return;
+  const extension = file.name.toLowerCase().match(/\.[^.]+$/)?.[0] || "";
+  if (![".jpg", ".jpeg", ".png", ".pdf"].includes(extension)) {
+    showNotice("Choose a JPG, JPEG, PNG, or PDF receipt", "error");
+    return;
+  }
+  const input = document.querySelector("#receipt-upload");
+  const button = document.querySelector("#receipt-upload-button");
+  const progress = document.querySelector("#receipt-progress");
+  const progressBar = document.querySelector("#receipt-progress-bar");
+  const progressLabel = document.querySelector("#receipt-progress-label");
+  const progressValue = document.querySelector("#receipt-progress-value");
+  button.disabled = true;
+  button.textContent = "Uploading...";
+  progress.hidden = false;
+  progressBar.value = 0;
+  progressLabel.textContent = `Uploading ${file.name}`;
+  progressValue.textContent = "0%";
+  showNotice("Reading receipt with image analysis. This can take a moment.", "info");
+  try {
+    const result = await uploadReceipt(file, (percent) => {
+      if (percent >= 100) {
+        progressBar.removeAttribute("value");
+        progressLabel.textContent = "Extracting receipt items";
+        progressValue.textContent = "Processing";
+      } else {
+        progressBar.value = percent;
+        progressValue.textContent = `${percent}%`;
+      }
+    });
+    progressBar.removeAttribute("value");
+    progressLabel.textContent = "Extracting receipt items";
+    progressValue.textContent = "Processing";
+    renderReceiptReview(result);
+    document.querySelector("#receipt-review-panel").hidden = false;
+    document.querySelector("#receipt-review-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+    await refreshReceipts();
+    showNotice("Receipt ready to review", "success");
+  } catch (error) {
+    await refreshReceipts();
+    showNotice(error.message, "error");
+  } finally {
+    input.value = "";
+    button.disabled = false;
+    button.textContent = "Choose Receipt";
+    progress.hidden = true;
+    progressBar.value = 0;
+  }
+}
+
+function uploadReceipt(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/receipts/parse");
+    request.setRequestHeader("Content-Type", file.type || "application/octet-stream");
+    request.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(Math.min(100, Math.round((event.loaded / event.total) * 100)));
+    });
+    request.addEventListener("load", () => {
+      let result = {};
+      try { result = JSON.parse(request.responseText || "{}"); }
+      catch { return reject(new Error("AI parsing failed")); }
+      if (request.status < 200 || request.status >= 300) return reject(new Error(result.error || "AI parsing failed"));
+      resolve(result);
+    });
+    request.addEventListener("error", () => reject(new Error("Receipt upload failed")));
+    request.addEventListener("abort", () => reject(new Error("Receipt upload cancelled")));
+    request.send(file);
+  });
+}
+
+function bindReceiptDropZone() {
+  const dropZone = document.querySelector("#receipt-drop-zone");
+  const input = document.querySelector("#receipt-upload");
+  dropZone.addEventListener("click", () => input.click());
+  dropZone.addEventListener("keydown", (event) => {
+    if (event.key === "Enter" || event.key === " ") {
+      event.preventDefault();
+      input.click();
+    }
+  });
+  ["dragenter", "dragover"].forEach((type) => dropZone.addEventListener(type, (event) => {
+    event.preventDefault();
+    dropZone.classList.add("drag-over");
+  }));
+  ["dragleave", "drop"].forEach((type) => dropZone.addEventListener(type, (event) => {
+    event.preventDefault();
+    dropZone.classList.remove("drag-over");
+  }));
+  dropZone.addEventListener("drop", (event) => parseReceipt(event.dataTransfer?.files?.[0]));
+}
+
+function renderReceiptReview(receipt) {
+  const form = document.querySelector("#receipt-review-form");
+  form.elements.draftId.value = receipt.draftId;
+  form.elements.storeName.value = receipt.storeName || "";
+  form.elements.receiptDate.value = receipt.receiptDate || "";
+  form.elements.subtotal.value = Number(receipt.subtotal || 0).toFixed(2);
+  form.elements.tax.value = Number(receipt.tax || 0).toFixed(2);
+  form.elements.total.value = Number(receipt.total || 0).toFixed(2);
+  document.querySelector("#receipt-review-items").innerHTML = receipt.items.map((item) => `
+    <tr class="receipt-item-row">
+      <td><input name="itemName" type="text" maxlength="160" value="${escapeHtml(item.itemName)}" required /></td>
+      <td><input name="quantity" type="number" min="0.01" step="0.01" value="${Number(item.quantity)}" required /></td>
+      <td><select name="unit">${selectOptions(unitOptions, item.unit)}</select></td>
+      <td><input name="unitPrice" type="number" min="0" step="0.01" value="${Number(item.unitPrice).toFixed(2)}" required /></td>
+      <td><input name="totalPrice" type="number" min="0" step="0.01" value="${Number(item.totalPrice).toFixed(2)}" required /></td>
+      <td><select name="category">${selectOptions(["Ingredients", "Packaging", "Equipment", "Utilities", "Other"], item.category)}</select></td>
+      <td><input name="updateInventory" type="checkbox" ${item.updateInventory ? "checked" : ""} aria-label="Update inventory for ${escapeHtml(item.itemName)}" /></td>
+    </tr>`).join("");
+}
+
+async function approveReceipt(event) {
+  event.preventDefault();
+  const form = event.currentTarget;
+  const submit = form.querySelector('[type="submit"]');
+  submit.disabled = true;
+  try {
+    const summary = Object.fromEntries(new FormData(form).entries());
+    const items = [...document.querySelectorAll("#receipt-review-items .receipt-item-row")].map((row) => ({
+      itemName: row.querySelector('[name="itemName"]').value,
+      quantity: row.querySelector('[name="quantity"]').value,
+      unit: row.querySelector('[name="unit"]').value,
+      unitPrice: row.querySelector('[name="unitPrice"]').value,
+      totalPrice: row.querySelector('[name="totalPrice"]').value,
+      category: row.querySelector('[name="category"]').value,
+      updateInventory: row.querySelector('[name="updateInventory"]').checked,
+    }));
+    const response = await fetch("/api/receipts/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ ...summary, items }),
+    });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not save receipt");
+    cancelReceiptReview();
+    showNotice("Receipt approved and inventory updated", "success");
+    await refreshAllData();
+  } catch (error) {
+    showNotice(error.message, "error");
+  } finally {
+    submit.disabled = false;
+  }
+}
+
+function cancelReceiptReview() {
+  document.querySelector("#receipt-review-panel").hidden = true;
+  document.querySelector("#receipt-review-form").reset();
+  document.querySelector("#receipt-review-items").innerHTML = "";
+}
+
+function selectOptions(options, selected) {
+  return options.map((option) => `<option value="${escapeHtml(option)}" ${option === selected ? "selected" : ""}>${escapeHtml(option)}</option>`).join("");
+}
+
 function showView(viewId) {
   activeView = viewId;
   document.querySelectorAll(".page-view").forEach((view) => {
@@ -126,7 +294,83 @@ async function refreshAllData() {
     refreshActivity(),
     refreshReport(),
     refreshShoppingList(),
+    refreshSquareStatus(),
+    refreshReceipts(),
   ]);
+}
+
+async function refreshReceipts() {
+  try {
+    const response = await fetch("/api/receipts");
+    if (!response.ok) throw new Error("Could not load receipts");
+    receiptsData = await response.json();
+    const body = document.querySelector("#receipts-body");
+    body.innerHTML = receiptsData.length
+      ? receiptsData.map((receipt) => `<tr>
+          <td>${formatDateTime(receipt.uploadedAt)}</td>
+          <td><strong>${escapeHtml(receipt.fileName)}</strong><span class="table-subtext">${formatFileSize(receipt.fileSize)}</span></td>
+          <td>${escapeHtml(receipt.storeName || "Not read")}</td>
+          <td>${receipt.receiptDate ? formatDate(receipt.receiptDate) : "-"}</td>
+          <td>${money.format(receipt.total || 0)}</td>
+          <td>${numberFormat.format(receipt.itemCount || 0)}</td>
+          <td><span class="receipt-status ${escapeHtml(receipt.status)}">${escapeHtml(receipt.status === "failed" ? receipt.errorCode || "Failed" : titleCase(receipt.status))}</span></td>
+        </tr>`).join("")
+      : tableEmpty(7, "No receipts uploaded yet", "Upload a grocery receipt to begin.");
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+}
+
+function formatFileSize(bytes) {
+  const size = Number(bytes || 0);
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+async function refreshSquareStatus() {
+  try {
+    const response = await fetch("/api/square/status");
+    if (!response.ok) throw new Error("Could not load Square status");
+    const status = await response.json();
+    const badge = document.querySelector("#square-status-badge");
+    const connect = document.querySelector("#square-connect");
+    const disconnect = document.querySelector("#square-disconnect");
+    badge.textContent = status.connected ? "Connected" : status.configured ? "Not connected" : "Setup required";
+    badge.classList.toggle("connected", status.connected);
+    document.querySelector("#square-status-copy").textContent = status.connected
+      ? "Completed Square payments will sync into Sales automatically."
+      : status.configured
+        ? "Connect the bakery owner's Square account to begin syncing sales."
+        : "Add the Square environment variables in Railway before connecting.";
+    document.querySelector("#square-environment").textContent = titleCase(status.environment);
+    document.querySelector("#square-merchant").textContent = status.merchantId || "Not connected";
+    document.querySelector("#square-last-sync").textContent = status.lastSyncAt ? formatDateTime(status.lastSyncAt) : "Never";
+    connect.hidden = status.connected;
+    connect.setAttribute("aria-disabled", String(!status.configured));
+    connect.onclick = status.configured ? null : (event) => event.preventDefault();
+    disconnect.hidden = !status.connected;
+    if (status.lastError) document.querySelector("#square-status-copy").textContent += ` Last error: ${status.lastError}`;
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+}
+
+async function disconnectSquare() {
+  if (!window.confirm("Disconnect Square? Existing synced sales will remain.")) return;
+  const button = document.querySelector("#square-disconnect");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/square/disconnect", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not disconnect Square");
+    showNotice("Square disconnected", "success");
+    await Promise.all([refreshSquareStatus(), refreshActivity()]);
+  } catch (error) {
+    showNotice(error.message, "error");
+  } finally {
+    button.disabled = false;
+  }
 }
 
 async function refreshDashboard() {

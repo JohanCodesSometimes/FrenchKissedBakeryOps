@@ -1,8 +1,12 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const os = require("os");
 const crypto = require("crypto");
 const { createStorage } = require("./storage");
+const { createSquareService } = require("./square");
+const { convertToMarkdown, textFirstExtensions } = require("./document-converter");
+const { createReceiptParser } = require("./receipt-parser");
 
 const root = __dirname;
 const port = Number(process.env.PORT || 4173);
@@ -11,6 +15,11 @@ const username = process.env.BAKERYOPS_USER || "owner";
 const password = process.env.BAKERYOPS_PASSWORD;
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
 const collectionNames = ["expenses", "inventory", "recipes", "sales"];
+const documentExtensions = new Set([
+  ...textFirstExtensions,
+  ".png", ".jpg", ".jpeg", ".webp", ".heic", ".tif", ".tiff",
+]);
+const maxDocumentBytes = Math.max(1, Number(process.env.MAX_DOCUMENT_UPLOAD_MB || 20)) * 1024 * 1024;
 
 let storage;
 let collections;
@@ -19,6 +28,12 @@ let activity;
 let priceHistory;
 let supplierPrices;
 let trendReports;
+let squareConnection;
+let squareService;
+let receiptItems;
+let receipts;
+let receiptParser;
+const receiptDrafts = new Map();
 
 const types = {
   ".html": "text/html; charset=utf-8",
@@ -37,6 +52,20 @@ async function bootstrap() {
   priceHistory = state.priceHistory || [];
   supplierPrices = state.supplierPrices || [];
   trendReports = state.trendReports || [];
+  squareConnection = state.squareConnection || {};
+  receiptItems = state.receiptItems || [];
+  receipts = state.receipts || [];
+  squareService = createSquareService({
+    env: process.env,
+    storage,
+    connection: squareConnection,
+    getSales: () => collections.sales,
+    saveSales: () => saveCollection("sales"),
+    logActivity,
+  });
+  console.log(`[square] ${squareService.status().configured ? "Configured" : "Not configured"}; ${squareService.status().connected ? "connected" : "disconnected"}.`);
+  receiptParser = createReceiptParser({ env: process.env, logger: console });
+  console.log(`[receipts] OpenAI Vision ${receiptParser.configured ? `configured (${receiptParser.model})` : "not configured"}.`);
   startServer();
 }
 
@@ -50,7 +79,62 @@ function startServer() {
         return sendJson(res, 200, { ok: true, storageMode: storage.mode, dataDir: storage.mode === "json" ? dataDir : null });
       }
 
+      if (url.pathname === "/api/square/oauth/callback" && req.method === "GET") {
+        await squareService.completeOAuth({
+          code: url.searchParams.get("code"),
+          state: url.searchParams.get("state"),
+          error: url.searchParams.get("error"),
+          errorDescription: url.searchParams.get("error_description"),
+        });
+        res.writeHead(302, { Location: "/?square=connected" });
+        return res.end();
+      }
+
+      if (url.pathname === "/api/square/webhook" && req.method === "POST") {
+        const rawBody = await readRawBody(req);
+        const signature = req.headers["x-square-hmacsha256-signature"];
+        if (!squareService.verifyWebhook(rawBody, signature)) {
+          return sendJson(res, 401, { error: "Invalid Square webhook signature" });
+        }
+        let event;
+        try { event = JSON.parse(rawBody); }
+        catch { return sendJson(res, 400, { error: "Invalid JSON body" }); }
+        const result = await squareService.processWebhook(event);
+        return sendJson(res, 200, result);
+      }
+
       if (password && !isAuthorized(req)) return requireLogin(res);
+
+      if (url.pathname === "/api/square/status" && req.method === "GET") {
+        return sendJson(res, 200, squareService.status());
+      }
+
+      if (url.pathname === "/api/square/connect" && req.method === "GET") {
+        const destination = await squareService.startOAuth();
+        res.writeHead(302, { Location: destination });
+        return res.end();
+      }
+
+      if (url.pathname === "/api/square/disconnect" && req.method === "POST") {
+        await squareService.disconnect();
+        return sendJson(res, 200, squareService.status());
+      }
+
+      if (url.pathname === "/api/documents/convert" && req.method === "POST") {
+        return convertUploadedDocument(req, res);
+      }
+
+      if (url.pathname === "/api/receipts/parse" && req.method === "POST") {
+        return parseReceiptUpload(req, res);
+      }
+
+      if (url.pathname === "/api/receipts" && req.method === "GET") {
+        return sendJson(res, 200, receipts);
+      }
+
+      if (url.pathname === "/api/receipts/approve" && req.method === "POST") {
+        return approveReceipt(req, res);
+      }
 
       if (url.pathname === "/api/dashboard" && req.method === "GET") {
         return sendJson(res, 200, buildDashboard());
@@ -151,6 +235,284 @@ async function createRecord(collectionName, req, res) {
   sendJson(res, 201, enrichRecord(collectionName, record));
 }
 
+async function convertUploadedDocument(req, res) {
+  const originalName = safeUploadName(req.headers["x-file-name"]);
+  const extension = path.extname(originalName).toLowerCase();
+  if (!documentExtensions.has(extension)) {
+    const error = validationError("Unsupported document type");
+    error.statusCode = 415;
+    throw error;
+  }
+  const file = await readBufferBody(req, maxDocumentBytes);
+  if (!file.length) throw validationError("Uploaded document is empty");
+
+  const tempPath = path.join(os.tmpdir(), `bakeryops-${crypto.randomUUID()}${extension}`);
+  try {
+    await fs.promises.writeFile(tempPath, file, { mode: 0o600, flag: "wx" });
+    const converted = await convertToMarkdown(tempPath, { logger: console });
+    if (converted.ok) {
+      await logActivity("document.converted", `Document prepared with MarkItDown: ${originalName}`);
+    }
+    return sendJson(res, converted.ok ? 200 : 202, {
+      converted: converted.ok,
+      method: converted.method,
+      fallbackRequired: converted.fallbackRequired,
+      textFirst: converted.textFirst,
+      characterCount: converted.quality.characterCount,
+      fileName: originalName,
+    });
+  } finally {
+    await fs.promises.unlink(tempPath).catch(() => {});
+  }
+}
+
+async function parseReceiptUpload(req, res) {
+  purgeReceiptDrafts();
+  const originalName = safeUploadName(req.headers["x-file-name"]);
+  const extension = path.extname(originalName).toLowerCase();
+  if (!documentExtensions.has(extension)) {
+    const error = validationError("Unsupported receipt type");
+    error.statusCode = 415;
+    throw error;
+  }
+  const file = await readBufferBody(req, maxDocumentBytes);
+  if (!file.length) throw validationError("Uploaded receipt is empty");
+  const tempPath = path.join(os.tmpdir(), `bakeryops-receipt-${crypto.randomUUID()}${extension}`);
+  const receipt = {
+    id: crypto.randomUUID(),
+    expenseId: "",
+    fileName: originalName,
+    mimeType: optionalText(req.headers["content-type"] || "application/octet-stream").slice(0, 120),
+    fileSize: file.length,
+    extractionSource: "",
+    storeName: "",
+    receiptDate: "",
+    subtotal: 0,
+    tax: 0,
+    total: 0,
+    itemCount: 0,
+    status: "processing",
+    errorCode: "",
+    uploadedAt: new Date().toISOString(),
+    approvedAt: "",
+  };
+  receipts.unshift(receipt);
+  await storage.saveReceipts(receipts);
+  try {
+    await fs.promises.writeFile(tempPath, file, { mode: 0o600, flag: "wx" });
+    const parsed = await receiptParser.parse({ filePath: tempPath, fileName: originalName, fileBuffer: file });
+    const draftId = crypto.randomUUID();
+    Object.assign(receipt, {
+      extractionSource: parsed.source,
+      storeName: optionalText(parsed.storeName),
+      receiptDate: /^\d{4}-\d{2}-\d{2}$/.test(parsed.receiptDate || "") ? parsed.receiptDate : "",
+      subtotal: round(parsed.subtotal || 0),
+      tax: round(parsed.tax || 0),
+      total: round(parsed.total || 0),
+      itemCount: parsed.items.length,
+      status: "review",
+    });
+    await storage.saveReceipts(receipts);
+    receiptDrafts.set(draftId, { parsed, receiptId: receipt.id, expiresAt: Date.now() + 30 * 60 * 1000 });
+    return sendJson(res, 200, {
+      draftId,
+      receiptId: receipt.id,
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+      source: parsed.source,
+      storeName: parsed.storeName,
+      receiptDate: parsed.receiptDate,
+      subtotal: parsed.subtotal,
+      tax: parsed.tax,
+      total: parsed.total,
+      items: parsed.items,
+    });
+  } catch (error) {
+    receipt.status = "failed";
+    receipt.errorCode = ["Receipt too blurry", "No readable items found", "AI parsing failed"].includes(error.message)
+      ? error.message
+      : "AI parsing failed";
+    await storage.saveReceipts(receipts).catch((saveError) => console.error(`[receipts] Could not save failed upload metadata (${saveError.name}).`));
+    throw error;
+  } finally {
+    await fs.promises.unlink(tempPath).catch(() => {});
+  }
+}
+
+async function approveReceipt(req, res) {
+  purgeReceiptDrafts();
+  const input = await readJsonBody(req);
+  const draft = receiptDrafts.get(String(input.draftId || ""));
+  if (!draft) {
+    const error = validationError("Receipt review expired. Upload the receipt again.");
+    error.statusCode = 404;
+    throw error;
+  }
+  if (draft.approving) {
+    const error = validationError("Receipt approval is already in progress.");
+    error.statusCode = 409;
+    throw error;
+  }
+  const reviewed = normalizeReceiptReview(input);
+  draft.approving = true;
+  const now = new Date().toISOString();
+  const expenseId = crypto.randomUUID();
+  const expense = {
+    id: expenseId,
+    date: reviewed.receiptDate,
+    vendor: reviewed.storeName,
+    category: receiptExpenseCategory(reviewed.items),
+    amount: reviewed.total,
+    notes: `Receipt upload. Subtotal: $${reviewed.subtotal.toFixed(2)}; tax: $${reviewed.tax.toFixed(2)}.`,
+    createdAt: now,
+  };
+  const snapshot = {
+    expenses: structuredClone(collections.expenses),
+    inventory: structuredClone(collections.inventory),
+    receiptItems: structuredClone(receiptItems),
+    receipts: structuredClone(receipts),
+    priceHistory: structuredClone(priceHistory),
+  };
+
+  collections.expenses.unshift(expense);
+  const createdItems = reviewed.items.map((item) => {
+    let inventoryItemId = "";
+    if (item.updateInventory) {
+      let inventoryItem = collections.inventory.find(
+        (record) => normalizeName(record.ingredientName) === normalizeName(item.itemName) && record.unit === item.unit,
+      );
+      if (inventoryItem) {
+        inventoryItem.quantity = round(inventoryItem.quantity + item.quantity);
+        inventoryItem.costPerUnit = item.unitPrice;
+        inventoryItem.supplier = reviewed.storeName;
+        inventoryItem.updatedAt = now;
+      } else {
+        inventoryItem = {
+          id: crypto.randomUUID(),
+          ingredientName: item.itemName,
+          quantity: item.quantity,
+          unit: item.unit,
+          minimumThreshold: 0,
+          supplier: reviewed.storeName,
+          costPerUnit: item.unitPrice,
+          createdAt: now,
+        };
+        collections.inventory.unshift(inventoryItem);
+      }
+      inventoryItemId = inventoryItem.id;
+      priceHistory.unshift({
+        id: crypto.randomUUID(),
+        inventoryId: inventoryItem.id,
+        ingredientName: inventoryItem.ingredientName,
+        supplier: reviewed.storeName,
+        costPerUnit: item.unitPrice,
+        unit: item.unit,
+        recordedAt: now,
+        reason: "receipt",
+      });
+    }
+    return {
+      id: crypto.randomUUID(),
+      expenseId,
+      receiptId: draft.receiptId,
+      inventoryItemId,
+      storeName: reviewed.storeName,
+      receiptDate: reviewed.receiptDate,
+      ...item,
+      createdAt: now,
+    };
+  });
+  receiptItems.unshift(...createdItems);
+  const receipt = receipts.find((item) => item.id === draft.receiptId);
+  if (receipt) {
+    Object.assign(receipt, {
+      expenseId,
+      storeName: reviewed.storeName,
+      receiptDate: reviewed.receiptDate,
+      subtotal: reviewed.subtotal,
+      tax: reviewed.tax,
+      total: reviewed.total,
+      itemCount: createdItems.length,
+      status: "approved",
+      errorCode: "",
+      approvedAt: now,
+    });
+  }
+
+  try {
+    await saveReceiptApproval();
+  } catch (error) {
+    collections.expenses = snapshot.expenses;
+    collections.inventory = snapshot.inventory;
+    receiptItems = snapshot.receiptItems;
+    receipts = snapshot.receipts;
+    priceHistory = snapshot.priceHistory;
+    await saveReceiptApproval().catch((rollbackError) => console.error(`[receipts] Rollback persistence failed (${rollbackError.name}).`));
+    draft.approving = false;
+    throw error;
+  }
+  receiptDrafts.delete(String(input.draftId));
+  await logActivity("receipt.approved", `Receipt from ${reviewed.storeName} approved with ${createdItems.length} items`)
+    .catch((error) => console.error(`[receipts] Activity logging failed (${error.name}).`));
+  return sendJson(res, 201, {
+    expense,
+    receiptItemCount: createdItems.length,
+    inventoryUpdatedCount: createdItems.filter((item) => item.updateInventory).length,
+  });
+}
+
+async function saveReceiptApproval() {
+  await storage.saveCollection("expenses", collections.expenses);
+  await storage.saveCollection("inventory", collections.inventory);
+  await storage.saveReceipts(receipts);
+  await storage.saveReceiptItems(receiptItems);
+  await storage.savePriceHistory(priceHistory);
+}
+
+function normalizeReceiptReview(input) {
+  const items = Array.isArray(input.items) ? input.items.map((item) => ({
+    itemName: requiredText(item.itemName, "Item name"),
+    quantity: requiredPositiveNumber(item.quantity, "Item quantity"),
+    unit: allowedValue(item.unit, ["lb", "oz", "g", "kg", "count", "dozen", "gallon"], "Item unit"),
+    unitPrice: requiredMoney(item.unitPrice, "Unit price"),
+    totalPrice: requiredMoney(item.totalPrice, "Total price"),
+    category: allowedValue(item.category, ["Ingredients", "Packaging", "Equipment", "Utilities", "Other"], "Item category"),
+    updateInventory: Boolean(item.updateInventory),
+  })) : [];
+  if (!items.length) throw validationError("No readable items found");
+  return {
+    storeName: requiredText(input.storeName, "Store name"),
+    receiptDate: requiredDate(input.receiptDate, "Receipt date"),
+    subtotal: requiredMoney(input.subtotal, "Subtotal"),
+    tax: requiredMoney(input.tax, "Tax"),
+    total: requiredMoney(input.total, "Total"),
+    items,
+  };
+}
+
+function receiptExpenseCategory(items) {
+  const counts = new Map();
+  for (const item of items) counts.set(item.category, (counts.get(item.category) || 0) + 1);
+  return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "Other";
+}
+
+function normalizeName(value) {
+  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function purgeReceiptDrafts() {
+  const now = Date.now();
+  for (const [id, draft] of receiptDrafts) if (draft.expiresAt <= now) receiptDrafts.delete(id);
+}
+
+function safeUploadName(header) {
+  let value = Array.isArray(header) ? header[0] : header;
+  try { value = decodeURIComponent(String(value || "")); }
+  catch { throw validationError("Invalid file name"); }
+  const name = path.basename(value).replace(/[^a-zA-Z0-9._ -]/g, "").trim();
+  if (!name || name.length > 180) throw validationError("A valid X-File-Name header is required");
+  return name;
+}
+
 async function updateRecord(collectionName, id, req, res) {
   const index = collections[collectionName].findIndex((record) => record.id === id);
   if (index === -1) return sendJson(res, 404, { error: "Record not found" });
@@ -179,6 +541,20 @@ async function deleteRecord(collectionName, id, res) {
   if (index === -1) return sendJson(res, 404, { error: "Record not found" });
   const [deleted] = collections[collectionName].splice(index, 1);
   await saveCollection(collectionName);
+  if (collectionName === "expenses") {
+    receiptItems = receiptItems.filter((item) => item.expenseId !== id);
+    await storage.saveReceiptItems(receiptItems);
+    receipts.forEach((receipt) => {
+      if (receipt.expenseId === id) receipt.expenseId = "";
+    });
+    await storage.saveReceipts(receipts);
+  }
+  if (collectionName === "inventory") {
+    receiptItems.forEach((item) => {
+      if (item.inventoryItemId === id) item.inventoryItemId = "";
+    });
+    await storage.saveReceiptItems(receiptItems);
+  }
   await logActivity(`${collectionName}.deleted`, `${recordLabel(collectionName, deleted)} deleted`);
   sendJson(res, 200, { ok: true });
 }
@@ -387,13 +763,15 @@ function buildShoppingList() {
 function exportBackup(res) {
   const backup = {
     application: "BakeryOps AI",
-    schemaVersion: 2,
+    schemaVersion: 3,
     exportedAt: new Date().toISOString(),
     settings,
     expenses: collections.expenses,
     inventory: collections.inventory,
     recipes: collections.recipes,
     sales: collections.sales,
+    receiptItems,
+    receipts,
     priceHistory,
     supplierPrices,
     trendReports,
@@ -721,6 +1099,53 @@ function readJsonBody(req) {
       }
     });
     req.on("error", reject);
+  });
+}
+
+function readRawBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > 1_000_000) {
+        const error = validationError("Request body is too large");
+        error.statusCode = 413;
+        reject(error);
+        req.destroy();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    req.on("error", reject);
+  });
+}
+
+function readBufferBody(req, limit) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    req.on("data", (chunk) => {
+      if (settled) return;
+      size += chunk.length;
+      if (size > limit) {
+        settled = true;
+        const error = validationError(`Document exceeds the ${Math.round(limit / 1024 / 1024)} MB upload limit`);
+        error.statusCode = 413;
+        reject(error);
+        req.resume();
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!settled) resolve(Buffer.concat(chunks));
+    });
+    req.on("error", (error) => {
+      if (!settled) reject(error);
+    });
   });
 }
 

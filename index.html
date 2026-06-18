@@ -17,6 +17,7 @@
         <nav class="nav-list">
           <button class="active" type="button" data-view-target="dashboard-view">Dashboard</button>
           <button type="button" data-view-target="expenses-view">Expenses</button>
+          <button type="button" data-view-target="receipts-view">Receipts</button>
           <button type="button" data-view-target="inventory-view">Inventory</button>
           <button type="button" data-view-target="recipes-view">Recipes</button>
           <button type="button" data-view-target="sales-view">Sales</button>
@@ -82,6 +83,31 @@
           </article>
         </section>
 
+        <section class="page-view" id="receipts-view" hidden>
+          <article class="panel receipt-upload-panel">
+            <div class="panel-header"><div><p class="eyebrow">Receipt intake</p><h2>Upload grocery receipt</h2></div></div>
+            <input id="receipt-upload" type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf" hidden />
+            <div class="receipt-drop-zone" id="receipt-drop-zone" role="button" tabindex="0" aria-controls="receipt-upload">
+              <strong>Drop a receipt here</strong>
+              <p>JPG, JPEG, PNG, or PDF up to 20 MB</p>
+              <button class="primary-button" id="receipt-upload-button" type="button">Choose Receipt</button>
+            </div>
+            <div class="receipt-progress" id="receipt-progress" hidden>
+              <div><strong id="receipt-progress-label">Uploading receipt</strong><span id="receipt-progress-value">0%</span></div>
+              <progress id="receipt-progress-bar" max="100" value="0">0%</progress>
+            </div>
+          </article>
+
+          <article class="panel section-gap" id="receipt-review-panel" hidden>
+            <form class="entry-form" id="receipt-review-form"><input name="draftId" type="hidden" /><div class="panel-header"><div><p class="eyebrow">Receipt review</p><h2>Review before saving</h2></div></div><div class="form-grid receipt-summary"><label>Store Name<input name="storeName" type="text" maxlength="120" required /></label><label>Receipt Date<input name="receiptDate" type="date" required /></label><label>Subtotal<input name="subtotal" type="number" min="0" step="0.01" required /></label><label>Tax<input name="tax" type="number" min="0" step="0.01" required /></label><label>Total<input name="total" type="number" min="0" step="0.01" required /></label></div><div class="table-wrap receipt-review-table"><table><thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Unit Price</th><th>Total</th><th>Category</th><th>Inventory</th></tr></thead><tbody id="receipt-review-items"></tbody></table></div><p class="settings-copy">Only checked items will update inventory and supplier price history.</p><div class="form-actions"><button class="ghost-button" id="cancel-receipt-review" type="button">Cancel</button><button class="primary-button" type="submit">Approve Receipt</button></div></form>
+          </article>
+
+          <article class="panel section-gap">
+            <div class="panel-header"><div><p class="eyebrow">Receipt history</p><h2>Uploaded receipts</h2></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Uploaded</th><th>File</th><th>Store</th><th>Receipt Date</th><th>Total</th><th>Items</th><th>Status</th></tr></thead><tbody id="receipts-body"><tr><td colspan="7"><div class="empty-state table-empty"><strong>No receipts uploaded yet</strong><p>Upload a grocery receipt to begin.</p></div></td></tr></tbody></table></div>
+          </article>
+        </section>
+
         <section class="page-view" id="inventory-view" hidden>
           <div class="section-toolbar"><div class="summary-stat"><span>Low Stock Alerts</span><strong id="inventory-alert-total">0</strong></div><div class="panel-actions"><input id="inventory-import" type="file" accept=".csv,text/csv" hidden /><button class="ghost-button" type="button" data-import-type="inventory">Import CSV</button><button class="primary-button" type="button" data-open-dialog="inventory-dialog">Add Item</button></div></div>
           <article class="panel">
@@ -135,6 +161,7 @@
           <div class="settings-grid">
             <article class="panel"><div class="panel-header"><div><p class="eyebrow">Owner settings</p><h2>Business preferences</h2></div></div><form id="settings-form" class="settings-form"><label>Business Name<input name="businessName" type="text" maxlength="120" /></label><label>Owner Name<input name="ownerName" type="text" maxlength="120" /></label><label>Currency<select name="currency"><option value="USD">USD - US Dollar</option></select></label><label>Shopping Target Multiplier<input name="shoppingTargetMultiplier" type="number" min="1" max="10" step="0.5" /></label><button class="primary-button" type="submit">Save Settings</button></form></article>
             <article class="panel"><div class="panel-header"><div><p class="eyebrow">Backup</p><h2>Export all data</h2></div></div><p class="settings-copy">Download one JSON file containing settings, expenses, inventory, recipes, sales, price history, and activity.</p><a class="primary-button link-button full-width-button" href="/api/backup.json">Download Backup</a><div class="import-help"><strong>CSV column names</strong><p>Expenses: Date, Vendor, Category, Amount, Notes</p><p>Inventory: Ingredient Name, Quantity, Unit, Minimum Threshold, Supplier, Cost Per Unit</p><p>Sales: Date, Product, Quantity Sold, Sale Amount</p></div></article>
+            <article class="panel"><div class="panel-header"><div><p class="eyebrow">Point of sale</p><h2>Square</h2></div><span class="status-badge" id="square-status-badge">Checking</span></div><p class="settings-copy" id="square-status-copy">Checking Square connection status.</p><dl class="integration-details"><div><dt>Environment</dt><dd id="square-environment">-</dd></div><div><dt>Merchant</dt><dd id="square-merchant">Not connected</dd></div><div><dt>Last sync</dt><dd id="square-last-sync">Never</dd></div></dl><div class="integration-actions"><a class="primary-button link-button" id="square-connect" href="/api/square/connect">Connect Square</a><button class="ghost-button" id="square-disconnect" type="button" hidden>Disconnect</button></div></article>
           </div>
         </section>
       </main>

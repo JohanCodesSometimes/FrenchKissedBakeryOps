@@ -1,0 +1,7 @@
+French Kissed Bakery Supplier Invoice
+Invoice date: 2026-06-18
+Vendor: Flour House
+Bread flour, 50 lb: $42.00
+Butter, 10 lb: $38.50
+Tax: $4.83
+Total: $85.33

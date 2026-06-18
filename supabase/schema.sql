@@ -103,6 +103,60 @@ create table if not exists public.settings (
   updated_at timestamptz not null default now()
 );
 
+create table if not exists public.square_connections (
+  id text primary key default 'owner',
+  merchant_id text,
+  access_token text,
+  refresh_token text,
+  token_expires_at timestamptz,
+  connected_at timestamptz,
+  last_sync_at timestamptz,
+  last_error text,
+  oauth_state text,
+  oauth_state_expires_at timestamptz,
+  environment text not null default 'sandbox',
+  updated_at timestamptz not null default now()
+);
+
+create table if not exists public.receipts (
+  id uuid primary key default gen_random_uuid(),
+  expense_id uuid references public.expenses(id) on delete set null,
+  file_name text not null,
+  mime_type text not null default 'application/octet-stream',
+  file_size bigint not null default 0,
+  extraction_source text not null default '',
+  store_name text not null default '',
+  receipt_date date,
+  subtotal numeric(12,2) not null default 0,
+  tax numeric(12,2) not null default 0,
+  total numeric(12,2) not null default 0,
+  item_count integer not null default 0,
+  status text not null check (status in ('processing','review','approved','failed')),
+  error_code text not null default '',
+  uploaded_at timestamptz not null default now(),
+  approved_at timestamptz
+);
+
+create table if not exists public.receipt_items (
+  id uuid primary key default gen_random_uuid(),
+  expense_id uuid not null references public.expenses(id) on delete cascade,
+  receipt_id uuid references public.receipts(id) on delete cascade,
+  inventory_item_id uuid references public.inventory_items(id) on delete set null,
+  store_name text not null,
+  receipt_date date not null,
+  item_name text not null,
+  quantity numeric(14,4) not null check (quantity > 0),
+  unit text not null check (unit in ('lb','oz','g','kg','count','dozen','gallon')),
+  unit_price numeric(12,4) not null check (unit_price >= 0),
+  total_price numeric(12,2) not null check (total_price >= 0),
+  category text not null check (category in ('Ingredients','Packaging','Equipment','Utilities','Other')),
+  update_inventory boolean not null default false,
+  created_at timestamptz not null default now()
+);
+
+alter table public.receipt_items
+  add column if not exists receipt_id uuid references public.receipts(id) on delete cascade;
+
 create index if not exists expenses_date_idx on public.expenses(date);
 create index if not exists sales_date_idx on public.sales(date);
 create index if not exists sales_source_idx on public.sales(source);
@@ -111,6 +165,9 @@ create index if not exists recipe_ingredients_recipe_idx on public.recipe_ingred
 create index if not exists supplier_prices_ingredient_idx on public.supplier_prices(lower(ingredient_name), recorded_at desc);
 create index if not exists activity_log_timestamp_idx on public.activity_log(timestamp desc);
 create index if not exists trend_reports_created_idx on public.trend_reports(created_at desc);
+create index if not exists receipt_items_expense_idx on public.receipt_items(expense_id);
+create index if not exists receipt_items_receipt_idx on public.receipt_items(receipt_id);
+create index if not exists receipts_uploaded_idx on public.receipts(uploaded_at desc);
 
 alter table public.expenses enable row level security;
 alter table public.inventory_items enable row level security;
@@ -121,5 +178,8 @@ alter table public.supplier_prices enable row level security;
 alter table public.trend_reports enable row level security;
 alter table public.activity_log enable row level security;
 alter table public.settings enable row level security;
+alter table public.square_connections enable row level security;
+alter table public.receipt_items enable row level security;
+alter table public.receipts enable row level security;
 
 -- No public policies are created. BakeryOps uses the service-role key only on the server.

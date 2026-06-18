@@ -9,6 +9,9 @@ const localFiles = {
   supplierPrices: "supplier-prices.json",
   trendReports: "trend-reports.json",
   settings: "settings.json",
+  squareConnection: "square-connection.json",
+  receiptItems: "receipt-items.json",
+  receipts: "receipts.json",
 };
 
 async function createStorage({ dataDir, env = process.env, logger = console, supabaseClient = null }) {
@@ -42,6 +45,9 @@ function createLocalStorage(dataDir) {
         priceHistory: loadArray(path.join(resolvedDir, localFiles.priceHistory)),
         supplierPrices: loadArray(path.join(resolvedDir, localFiles.supplierPrices)),
         trendReports: loadArray(path.join(resolvedDir, localFiles.trendReports)),
+        squareConnection: loadObject(path.join(resolvedDir, localFiles.squareConnection)),
+        receiptItems: loadArray(path.join(resolvedDir, localFiles.receiptItems)),
+        receipts: loadArray(path.join(resolvedDir, localFiles.receipts)),
       };
       for (const name of collectionNames) {
         ensureJson(path.join(resolvedDir, `${name}.json`), state.collections[name]);
@@ -51,6 +57,9 @@ function createLocalStorage(dataDir) {
       ensureJson(path.join(resolvedDir, localFiles.priceHistory), state.priceHistory);
       ensureJson(path.join(resolvedDir, localFiles.supplierPrices), state.supplierPrices);
       ensureJson(path.join(resolvedDir, localFiles.trendReports), state.trendReports);
+      ensureJson(path.join(resolvedDir, localFiles.squareConnection), state.squareConnection);
+      ensureJson(path.join(resolvedDir, localFiles.receiptItems), state.receiptItems);
+      ensureJson(path.join(resolvedDir, localFiles.receipts), state.receipts);
       return state;
     },
     async saveCollection(name, value) {
@@ -71,6 +80,15 @@ function createLocalStorage(dataDir) {
     async saveTrendReports(value) {
       writeJsonAtomic(path.join(resolvedDir, localFiles.trendReports), value);
     },
+    async saveSquareConnection(value) {
+      writeJsonAtomic(path.join(resolvedDir, localFiles.squareConnection), value);
+    },
+    async saveReceiptItems(value) {
+      writeJsonAtomic(path.join(resolvedDir, localFiles.receiptItems), value);
+    },
+    async saveReceipts(value) {
+      writeJsonAtomic(path.join(resolvedDir, localFiles.receipts), value);
+    },
   };
 }
 
@@ -78,7 +96,7 @@ function createSupabaseStorage(client) {
   return {
     mode: "supabase",
     async initialize() {
-      const [expenses, inventory, recipes, sales, settings, activity, supplierPrices, trendReports] =
+      const [expenses, inventory, recipes, sales, settings, activity, supplierPrices, trendReports, squareConnection, receiptItems, receipts] =
         await Promise.all([
           selectAll(client, "expenses"),
           selectAll(client, "inventory_items"),
@@ -88,6 +106,9 @@ function createSupabaseStorage(client) {
           selectAll(client, "activity_log", "timestamp", false),
           selectAll(client, "supplier_prices", "recorded_at", false),
           selectAll(client, "trend_reports", "created_at", false),
+          selectSquareConnection(client),
+          selectReceiptItems(client),
+          selectReceipts(client),
         ]);
       return {
         collections: {
@@ -105,6 +126,9 @@ function createSupabaseStorage(client) {
           .filter((row) => row.source !== "inventory_history")
           .map(fromSupplierPriceRow),
         trendReports: trendReports.map(fromTrendReportRow),
+        squareConnection,
+        receiptItems: receiptItems.map(fromReceiptItemRow),
+        receipts: receipts.map(fromReceiptRow),
       };
     },
     async saveCollection(name, value) {
@@ -137,6 +161,18 @@ function createSupabaseStorage(client) {
     async saveTrendReports(value) {
       await syncTable(client, "trend_reports", value.map(toTrendReportRow));
     },
+    async saveSquareConnection(value) {
+      await assertQuery(
+        client.from("square_connections").upsert(toSquareConnectionRow(value), { onConflict: "id" }),
+        "save Square connection",
+      );
+    },
+    async saveReceiptItems(value) {
+      await syncTable(client, "receipt_items", value.map(toReceiptItemRow));
+    },
+    async saveReceipts(value) {
+      await syncTable(client, "receipts", value.map(toReceiptRow));
+    },
   };
 }
 
@@ -160,6 +196,31 @@ async function selectSettings(client) {
   const { data, error } = await client.from("settings").select("*").eq("id", "owner").maybeSingle();
   if (error) throw storageError("load settings", error);
   return data ? fromSettingsRow(data) : {};
+}
+
+async function selectSquareConnection(client) {
+  const { data, error } = await client.from("square_connections").select("*").eq("id", "owner").maybeSingle();
+  if (error && ["42P01", "PGRST205"].includes(error.code)) return {};
+  if (error) throw storageError("load Square connection", error);
+  return data ? fromSquareConnectionRow(data) : {};
+}
+
+async function selectReceiptItems(client) {
+  try {
+    return await selectAll(client, "receipt_items");
+  } catch (error) {
+    if (/receipt_items|schema cache|does not exist/i.test(error.message)) return [];
+    throw error;
+  }
+}
+
+async function selectReceipts(client) {
+  try {
+    return await selectAll(client, "receipts", "uploaded_at", false);
+  } catch (error) {
+    if (/receipts|schema cache|does not exist/i.test(error.message)) return [];
+    throw error;
+  }
 }
 
 async function syncTable(client, table, rows) {
@@ -278,6 +339,112 @@ function toSettingsRow(item) {
 }
 function fromSettingsRow(row) {
   return { businessName: row.business_name || "", ownerName: row.owner_name || "", currency: row.currency || "USD", shoppingTargetMultiplier: Number(row.shopping_target_multiplier || 2) };
+}
+function toSquareConnectionRow(item) {
+  return {
+    id: "owner",
+    merchant_id: item.merchantId || null,
+    access_token: item.accessToken || null,
+    refresh_token: item.refreshToken || null,
+    token_expires_at: item.tokenExpiresAt || null,
+    connected_at: item.connectedAt || null,
+    last_sync_at: item.lastSyncAt || null,
+    last_error: item.lastError || null,
+    oauth_state: item.oauthState || null,
+    oauth_state_expires_at: item.oauthStateExpiresAt || null,
+    environment: item.environment || "sandbox",
+    updated_at: new Date().toISOString(),
+  };
+}
+function fromSquareConnectionRow(row) {
+  return {
+    merchantId: row.merchant_id || "",
+    accessToken: row.access_token || "",
+    refreshToken: row.refresh_token || "",
+    tokenExpiresAt: row.token_expires_at || "",
+    connectedAt: row.connected_at || "",
+    lastSyncAt: row.last_sync_at || "",
+    lastError: row.last_error || "",
+    oauthState: row.oauth_state || "",
+    oauthStateExpiresAt: row.oauth_state_expires_at || "",
+    environment: row.environment || "sandbox",
+  };
+}
+function toReceiptItemRow(item) {
+  return {
+    id: item.id,
+    expense_id: item.expenseId,
+    receipt_id: item.receiptId || null,
+    inventory_item_id: item.inventoryItemId || null,
+    store_name: item.storeName,
+    receipt_date: item.receiptDate,
+    item_name: item.itemName,
+    quantity: item.quantity,
+    unit: item.unit,
+    unit_price: item.unitPrice,
+    total_price: item.totalPrice,
+    category: item.category,
+    update_inventory: Boolean(item.updateInventory),
+    created_at: item.createdAt || new Date().toISOString(),
+  };
+}
+function fromReceiptItemRow(row) {
+  return {
+    id: row.id,
+    expenseId: row.expense_id,
+    receiptId: row.receipt_id || "",
+    inventoryItemId: row.inventory_item_id || "",
+    storeName: row.store_name,
+    receiptDate: row.receipt_date,
+    itemName: row.item_name,
+    quantity: Number(row.quantity),
+    unit: row.unit,
+    unitPrice: Number(row.unit_price),
+    totalPrice: Number(row.total_price),
+    category: row.category,
+    updateInventory: Boolean(row.update_inventory),
+    createdAt: row.created_at,
+  };
+}
+function toReceiptRow(item) {
+  return {
+    id: item.id,
+    expense_id: item.expenseId || null,
+    file_name: item.fileName,
+    mime_type: item.mimeType || "application/octet-stream",
+    file_size: item.fileSize || 0,
+    extraction_source: item.extractionSource || "",
+    store_name: item.storeName || "",
+    receipt_date: item.receiptDate || null,
+    subtotal: item.subtotal || 0,
+    tax: item.tax || 0,
+    total: item.total || 0,
+    item_count: item.itemCount || 0,
+    status: item.status,
+    error_code: item.errorCode || "",
+    uploaded_at: item.uploadedAt,
+    approved_at: item.approvedAt || null,
+  };
+}
+function fromReceiptRow(row) {
+  return {
+    id: row.id,
+    expenseId: row.expense_id || "",
+    fileName: row.file_name,
+    mimeType: row.mime_type,
+    fileSize: Number(row.file_size || 0),
+    extractionSource: row.extraction_source || "",
+    storeName: row.store_name || "",
+    receiptDate: row.receipt_date || "",
+    subtotal: Number(row.subtotal || 0),
+    tax: Number(row.tax || 0),
+    total: Number(row.total || 0),
+    itemCount: Number(row.item_count || 0),
+    status: row.status,
+    errorCode: row.error_code || "",
+    uploadedAt: row.uploaded_at,
+    approvedAt: row.approved_at || "",
+  };
 }
 
 function loadArray(filePath) {
