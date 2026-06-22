@@ -145,21 +145,40 @@ create table if not exists public.receipt_items (
   store_name text not null,
   receipt_date date not null,
   item_name text not null,
+  raw_line text not null default '',
   quantity numeric(14,4) not null check (quantity > 0),
-  unit text not null check (unit in ('lb','oz','g','kg','count','dozen','gallon')),
+  unit text not null check (unit in ('lb','oz','g','kg','count','dozen','gallon','unknown')),
   unit_price numeric(12,4) not null check (unit_price >= 0),
-  total_price numeric(12,2) not null check (total_price >= 0),
+  total_price numeric(12,2) not null,
   category text not null check (category in ('Ingredients','Packaging','Equipment','Utilities','Other')),
   update_inventory boolean not null default false,
+  is_discount boolean not null default false,
+  is_fee boolean not null default false,
+  is_deposit boolean not null default false,
   created_at timestamptz not null default now()
 );
 
 alter table public.receipt_items
-  add column if not exists receipt_id uuid references public.receipts(id) on delete cascade;
+  add column if not exists receipt_id uuid references public.receipts(id) on delete cascade,
+  add column if not exists raw_line text not null default '',
+  add column if not exists is_discount boolean not null default false,
+  add column if not exists is_fee boolean not null default false,
+  add column if not exists is_deposit boolean not null default false;
+
+alter table public.receipt_items
+  drop constraint if exists receipt_items_unit_check,
+  drop constraint if exists receipt_items_total_price_check;
+
+alter table public.receipt_items
+  add constraint receipt_items_unit_check
+  check (unit in ('lb','oz','g','kg','count','dozen','gallon','unknown'));
 
 create index if not exists expenses_date_idx on public.expenses(date);
 create index if not exists sales_date_idx on public.sales(date);
 create index if not exists sales_source_idx on public.sales(source);
+create unique index if not exists sales_square_order_unique_idx
+  on public.sales(square_order_id)
+  where square_order_id is not null;
 create index if not exists inventory_name_idx on public.inventory_items(lower(ingredient_name));
 create index if not exists recipe_ingredients_recipe_idx on public.recipe_ingredients(recipe_id);
 create index if not exists supplier_prices_ingredient_idx on public.supplier_prices(lower(ingredient_name), recorded_at desc);

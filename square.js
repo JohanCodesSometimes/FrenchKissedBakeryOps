@@ -96,63 +96,149 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
   }
 
   async function processWebhook(event) {
-    if (!event || !["payment.created", "payment.updated"].includes(event.type)) {
-      return { accepted: true, ignored: true };
-    }
-    const paymentId = event.data?.id || event.data?.object?.payment?.id;
-    if (!paymentId) return { accepted: true, ignored: true };
-    if (getSales().some((sale) => sale.squarePaymentId === paymentId)) {
-      return { accepted: true, duplicate: true };
+    const paymentTypes = new Set(["payment.created", "payment.updated"]);
+    const orderTypes = new Set(["order.created", "order.updated"]);
+
+    if (paymentTypes.has(event?.type)) {
+      const paymentId = event.data?.id || event.data?.object?.payment?.id;
+      if (!paymentId) return { accepted: true, ignored: true };
+      return { accepted: true, ...await syncPayment(paymentId) };
     }
 
+    if (orderTypes.has(event?.type)) {
+      const orderId = event.data?.id || event.data?.object?.order?.id ||
+        event.data?.object?.order_updated?.order_id ||
+        event.data?.object?.order_created?.order_id;
+      if (!orderId) return { accepted: true, ignored: true };
+      return { accepted: true, ...await syncOrder(orderId) };
+    }
+
+    return { accepted: true, ignored: true };
+  }
+
+  async function syncRecentSales({ days = 30 } = {}) {
+    requireConfigured();
+    if (!connection.accessToken) throw publicError("Square is not connected.", 409);
+    const boundedDays = Math.max(1, Math.min(90, Number(days) || 30));
+    const beginTime = new Date(Date.now() - boundedDays * 24 * 60 * 60 * 1000).toISOString();
+    const summary = { synced: 0, duplicates: 0, ignored: 0, errors: 0 };
+    let cursor = "";
+    let pageCount = 0;
+
     try {
-      const paymentResult = await squareRequest(`/v2/payments/${encodeURIComponent(paymentId)}`);
-      const payment = paymentResult.payment;
-      if (!payment || payment.status !== "COMPLETED") return { accepted: true, ignored: true };
-      if (getSales().some((sale) => sale.squarePaymentId === payment.id)) {
-        return { accepted: true, duplicate: true };
-      }
-      const orderResult = payment.order_id
-        ? await squareRequest(`/v2/orders/${encodeURIComponent(payment.order_id)}`)
-        : {};
-      const order = orderResult.order || {};
-      const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
-      const names = lineItems.map((item) => item.name || item.variation_name).filter(Boolean);
-      const quantity = lineItems.reduce((total, item) => total + (Number(item.quantity) || 0), 0) || 1;
-      const soldAt = payment.updated_at || payment.created_at || order.closed_at || new Date().toISOString();
-      const sale = {
-        id: crypto.randomUUID(),
-        date: soldAt.slice(0, 10),
-        product: names.join(", ") || "Square sale",
-        quantitySold: round(quantity),
-        saleAmount: money(payment.amount_money || order.total_money),
-        tax: money(order.total_tax_money),
-        discount: money(order.total_discount_money),
-        soldAt,
-        source: "square",
-        squarePaymentId: payment.id,
-        squareOrderId: payment.order_id || order.id || "",
-        createdAt: new Date().toISOString(),
-      };
-      const sales = getSales();
-      sales.unshift(sale);
-      try {
-        await saveSales();
-      } catch (saveError) {
-        const index = sales.findIndex((item) => item.id === sale.id);
-        if (index >= 0) sales.splice(index, 1);
-        throw saveError;
-      }
+      do {
+        const query = new URLSearchParams({
+          begin_time: beginTime,
+          sort_order: "DESC",
+          limit: "100",
+        });
+        if (cursor) query.set("cursor", cursor);
+        const result = await squareRequest(`/v2/payments?${query}`);
+        for (const payment of result.payments || []) {
+          try {
+            const outcome = await syncPayment(payment.id, payment, { updateConnection: false, logSale: false });
+            if (outcome.synced) summary.synced += 1;
+            else if (outcome.duplicate) summary.duplicates += 1;
+            else summary.ignored += 1;
+          } catch {
+            summary.errors += 1;
+          }
+        }
+        cursor = result.cursor || "";
+        pageCount += 1;
+      } while (cursor && pageCount < 10);
+
       connection.lastSyncAt = new Date().toISOString();
-      connection.lastError = "";
+      connection.lastError = summary.errors ? `${summary.errors} recent Square sale(s) could not be synced.` : "";
       await storage.saveSquareConnection(connection);
-      await logActivity("square.sale.synced", `Square sale synced: ${sale.product}`);
-      return { accepted: true, synced: true };
+      await logActivity(
+        "square.sales.synced",
+        `Square recent-sales sync completed: ${summary.synced} new, ${summary.duplicates} duplicates, ${summary.errors} errors`,
+      );
+      return { ...summary, lastSyncAt: connection.lastSyncAt };
     } catch (error) {
-      connection.lastError = error.message;
+      connection.lastError = safeSquareError(error);
       await storage.saveSquareConnection(connection);
       throw error;
     }
+  }
+
+  async function syncPayment(paymentId, suppliedPayment = null, options = {}) {
+    if (isDuplicate(paymentId, "")) return { duplicate: true };
+    const payment = suppliedPayment || (await squareRequest(`/v2/payments/${encodeURIComponent(paymentId)}`)).payment;
+    if (!payment || payment.status !== "COMPLETED") return { ignored: true };
+
+    const orderId = payment.order_id || "";
+    if (isDuplicate(payment.id, orderId)) return { duplicate: true };
+    const order = orderId
+      ? (await squareRequest(`/v2/orders/${encodeURIComponent(orderId)}`)).order || {}
+      : {};
+    if (isDuplicate(payment.id, order.id || orderId)) return { duplicate: true };
+
+    const sale = buildSale({ payment, order });
+    await persistSale(sale, options);
+    return { synced: true };
+  }
+
+  async function syncOrder(orderId, options = {}) {
+    if (isDuplicate("", orderId)) return { duplicate: true };
+    const order = (await squareRequest(`/v2/orders/${encodeURIComponent(orderId)}`)).order;
+    if (!order || order.state !== "COMPLETED") return { ignored: true };
+
+    const paymentId = (order.tenders || []).map((tender) => tender.payment_id).find(Boolean) || "";
+    if (isDuplicate(paymentId, order.id)) return { duplicate: true };
+    const sale = buildSale({ payment: paymentId ? { id: paymentId, order_id: order.id } : null, order });
+    await persistSale(sale, options);
+    return { synced: true };
+  }
+
+  function buildSale({ payment, order }) {
+    const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
+    const names = lineItems.map((item) => item.name || item.variation_name).filter(Boolean);
+    const quantity = lineItems.reduce((total, item) => total + (Number(item.quantity) || 0), 0) || 1;
+    const soldAt = payment?.updated_at || payment?.created_at || order.closed_at ||
+      order.updated_at || order.created_at || new Date().toISOString();
+    return {
+      id: crypto.randomUUID(),
+      date: soldAt.slice(0, 10),
+      product: names.join(", ") || "Square sale",
+      quantitySold: round(quantity),
+      saleAmount: money(payment?.amount_money || order.total_money),
+      tax: money(order.total_tax_money),
+      discount: money(order.total_discount_money),
+      soldAt,
+      source: "square",
+      squarePaymentId: payment?.id || "",
+      squareOrderId: payment?.order_id || order.id || "",
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  async function persistSale(sale, { updateConnection = true, logSale = true } = {}) {
+    const sales = getSales();
+    if (isDuplicate(sale.squarePaymentId, sale.squareOrderId)) return;
+    sales.unshift(sale);
+    try {
+      await saveSales();
+    } catch (saveError) {
+      const index = sales.findIndex((item) => item.id === sale.id);
+      if (index >= 0) sales.splice(index, 1);
+      throw saveError;
+    }
+
+    if (updateConnection) {
+      connection.lastSyncAt = new Date().toISOString();
+      connection.lastError = "";
+      await storage.saveSquareConnection(connection);
+    }
+    if (logSale) await logActivity("square.sale.synced", `Square sale synced: ${sale.product}`);
+  }
+
+  function isDuplicate(paymentId, orderId) {
+    return getSales().some((sale) =>
+      (paymentId && sale.squarePaymentId === paymentId) ||
+      (orderId && sale.squareOrderId === orderId),
+    );
   }
 
   async function squareRequest(path, options = {}) {
@@ -166,7 +252,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = result.errors?.[0]?.detail || `Square request failed (${response.status})`;
-      throw new Error(detail);
+      throw publicError(detail, response.status >= 400 && response.status < 500 ? response.status : 502);
     }
     return result;
   }
@@ -205,7 +291,15 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     if (!configured()) throw publicError("Square environment variables are incomplete.", 503);
   }
 
-  return { status, startOAuth, completeOAuth, disconnect, verifyWebhook, processWebhook };
+  return {
+    status,
+    startOAuth,
+    completeOAuth,
+    disconnect,
+    verifyWebhook,
+    processWebhook,
+    syncRecentSales,
+  };
 }
 
 function encrypt(value, secret) {
@@ -237,6 +331,10 @@ function money(value) {
 
 function round(value) {
   return Math.round(Number(value) * 100) / 100;
+}
+
+function safeSquareError(error) {
+  return String(error?.message || "Square sync failed").slice(0, 500);
 }
 
 function publicError(message, statusCode) {

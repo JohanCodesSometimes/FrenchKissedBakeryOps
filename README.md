@@ -65,9 +65,9 @@ SQUARE_WEBHOOK_URL=https://<your-railway-domain>/api/square/webhook
 SQUARE_VERSION=2026-05-20
 ```
 
-In the Square Developer Dashboard, add the exact OAuth redirect URL above. Create a webhook subscription using the exact webhook URL and subscribe to `payment.created` and `payment.updated`. The URL strings must match the Railway variables exactly because Square includes the notification URL when calculating its signature.
+In the Square Developer Dashboard, add the exact OAuth redirect URL above. Create a webhook subscription using the exact webhook URL and subscribe to `payment.created`, `payment.updated`, `order.created`, and `order.updated`. The URL strings must match the Railway variables exactly because Square includes the notification URL when calculating its signature.
 
-After Railway redeploys, open Settings and select **Connect Square**. Access and refresh tokens are encrypted before storage, remain server-only, and are never sent to the browser. Completed payments are deduplicated by Square payment ID and saved through the active Supabase or JSON storage backend.
+After Railway redeploys, open Settings and select **Connect Square**. Access and refresh tokens are encrypted before storage, remain server-only, and are never sent to the browser. Completed payments and orders are deduplicated by Square payment ID or order ID and saved through the active Supabase or JSON storage backend. Settings also provides **Sync Recent Square Sales**, which scans up to the previous 30 days and follows Square pagination.
 
 ## Receipt AI
 

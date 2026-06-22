@@ -6,6 +6,7 @@ const money = new Intl.NumberFormat("en-US", {
 });
 const numberFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 const unitOptions = ["lb", "oz", "g", "kg", "count", "dozen", "gallon"];
+const receiptUnitOptions = [...unitOptions, "unknown"];
 
 let appData = null;
 let appSettings = null;
@@ -51,6 +52,7 @@ function bindEvents() {
   document.querySelector("#refresh-shopping").addEventListener("click", refreshShoppingList);
   document.querySelector("#settings-form").addEventListener("submit", saveSettings);
   document.querySelector("#square-disconnect").addEventListener("click", disconnectSquare);
+  document.querySelector("#square-sync").addEventListener("click", syncRecentSquareSales);
   document.querySelector("#receipt-upload-button").addEventListener("click", (event) => {
     event.stopPropagation();
     document.querySelector("#receipt-upload").click();
@@ -201,16 +203,34 @@ function renderReceiptReview(receipt) {
   form.elements.subtotal.value = Number(receipt.subtotal || 0).toFixed(2);
   form.elements.tax.value = Number(receipt.tax || 0).toFixed(2);
   form.elements.total.value = Number(receipt.total || 0).toFixed(2);
-  document.querySelector("#receipt-review-items").innerHTML = receipt.items.map((item) => `
+
+  const warningPanel = document.querySelector("#receipt-review-warnings");
+  const warnings = Array.isArray(receipt.warnings) ? receipt.warnings : [];
+  warningPanel.hidden = !warnings.length;
+  warningPanel.innerHTML = warnings.length
+    ? `<strong>Check these extracted details</strong><p>Confidence: ${Math.round(Number(receipt.confidence || 0) * 100)}%</p><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
+    : "";
+
+  document.querySelector("#receipt-review-items").innerHTML = receipt.items.map((item) => {
+    const flags = [item.isDiscount && "Discount", item.isFee && "Fee", item.isDeposit && "Deposit"].filter(Boolean);
+    return `
     <tr class="receipt-item-row">
-      <td><input name="itemName" type="text" maxlength="160" value="${escapeHtml(item.itemName)}" required /></td>
+      <td>
+        <input name="itemName" type="text" maxlength="160" value="${escapeHtml(item.itemName)}" title="${escapeHtml(item.rawLine || "")}" required />
+        <input name="rawLine" type="hidden" value="${escapeHtml(item.rawLine || "")}" />
+        <input name="isDiscount" type="hidden" value="${Boolean(item.isDiscount)}" />
+        <input name="isFee" type="hidden" value="${Boolean(item.isFee)}" />
+        <input name="isDeposit" type="hidden" value="${Boolean(item.isDeposit)}" />
+        ${flags.length ? `<span class="receipt-line-flags">${flags.join(" / ")}</span>` : ""}
+      </td>
       <td><input name="quantity" type="number" min="0.01" step="0.01" value="${Number(item.quantity)}" required /></td>
-      <td><select name="unit">${selectOptions(unitOptions, item.unit)}</select></td>
+      <td><select name="unit">${selectOptions(receiptUnitOptions, item.unit)}</select></td>
       <td><input name="unitPrice" type="number" min="0" step="0.01" value="${Number(item.unitPrice).toFixed(2)}" required /></td>
-      <td><input name="totalPrice" type="number" min="0" step="0.01" value="${Number(item.totalPrice).toFixed(2)}" required /></td>
+      <td><input name="totalPrice" type="number" step="0.01" value="${Number(item.totalPrice).toFixed(2)}" required /></td>
       <td><select name="category">${selectOptions(["Ingredients", "Packaging", "Equipment", "Utilities", "Other"], item.category)}</select></td>
       <td><input name="updateInventory" type="checkbox" ${item.updateInventory ? "checked" : ""} aria-label="Update inventory for ${escapeHtml(item.itemName)}" /></td>
-    </tr>`).join("");
+    </tr>`;
+  }).join("");
 }
 
 async function approveReceipt(event) {
@@ -222,12 +242,16 @@ async function approveReceipt(event) {
     const summary = Object.fromEntries(new FormData(form).entries());
     const items = [...document.querySelectorAll("#receipt-review-items .receipt-item-row")].map((row) => ({
       itemName: row.querySelector('[name="itemName"]').value,
+      rawLine: row.querySelector('[name="rawLine"]').value,
       quantity: row.querySelector('[name="quantity"]').value,
       unit: row.querySelector('[name="unit"]').value,
       unitPrice: row.querySelector('[name="unitPrice"]').value,
       totalPrice: row.querySelector('[name="totalPrice"]').value,
       category: row.querySelector('[name="category"]').value,
       updateInventory: row.querySelector('[name="updateInventory"]').checked,
+      isDiscount: row.querySelector('[name="isDiscount"]').value === "true",
+      isFee: row.querySelector('[name="isFee"]').value === "true",
+      isDeposit: row.querySelector('[name="isDeposit"]').value === "true",
     }));
     const response = await fetch("/api/receipts/approve", {
       method: "POST",
@@ -250,6 +274,8 @@ function cancelReceiptReview() {
   document.querySelector("#receipt-review-panel").hidden = true;
   document.querySelector("#receipt-review-form").reset();
   document.querySelector("#receipt-review-items").innerHTML = "";
+  document.querySelector("#receipt-review-warnings").hidden = true;
+  document.querySelector("#receipt-review-warnings").innerHTML = "";
 }
 
 function selectOptions(options, selected) {
@@ -328,6 +354,7 @@ async function refreshSquareStatus() {
     const badge = document.querySelector("#square-status-badge");
     const connect = document.querySelector("#square-connect");
     const disconnect = document.querySelector("#square-disconnect");
+    const sync = document.querySelector("#square-sync");
     badge.textContent = status.connected ? "Connected" : status.configured ? "Not connected" : "Setup required";
     badge.classList.toggle("connected", status.connected);
     document.querySelector("#square-status-copy").textContent = status.connected
@@ -342,9 +369,33 @@ async function refreshSquareStatus() {
     connect.setAttribute("aria-disabled", String(!status.configured));
     connect.onclick = status.configured ? null : (event) => event.preventDefault();
     disconnect.hidden = !status.connected;
+    sync.hidden = !status.connected;
+    sync.disabled = !status.connected;
     if (status.lastError) document.querySelector("#square-status-copy").textContent += ` Last error: ${status.lastError}`;
   } catch (error) {
     showNotice(error.message, "error");
+  }
+}
+
+async function syncRecentSquareSales() {
+  const button = document.querySelector("#square-sync");
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "Syncing...";
+  try {
+    const response = await fetch("/api/square/sync", { method: "POST" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(result.error || "Could not sync Square sales");
+    showNotice(
+      `Square sync complete: ${result.synced} new, ${result.duplicates} duplicates${result.errors ? `, ${result.errors} errors` : ""}`,
+      result.errors ? "info" : "success",
+    );
+    await refreshAllData();
+  } catch (error) {
+    showNotice(error.message, "error");
+  } finally {
+    button.textContent = originalText;
+    button.disabled = false;
   }
 }
 

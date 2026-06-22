@@ -379,12 +379,16 @@ function toReceiptItemRow(item) {
     store_name: item.storeName,
     receipt_date: item.receiptDate,
     item_name: item.itemName,
+    raw_line: item.rawLine || "",
     quantity: item.quantity,
     unit: item.unit,
     unit_price: item.unitPrice,
     total_price: item.totalPrice,
     category: item.category,
     update_inventory: Boolean(item.updateInventory),
+    is_discount: Boolean(item.isDiscount),
+    is_fee: Boolean(item.isFee),
+    is_deposit: Boolean(item.isDeposit),
     created_at: item.createdAt || new Date().toISOString(),
   };
 }
@@ -397,12 +401,16 @@ function fromReceiptItemRow(row) {
     storeName: row.store_name,
     receiptDate: row.receipt_date,
     itemName: row.item_name,
+    rawLine: row.raw_line || "",
     quantity: Number(row.quantity),
     unit: row.unit,
     unitPrice: Number(row.unit_price),
     totalPrice: Number(row.total_price),
     category: row.category,
     updateInventory: Boolean(row.update_inventory),
+    isDiscount: Boolean(row.is_discount),
+    isFee: Boolean(row.is_fee),
+    isDeposit: Boolean(row.is_deposit),
     createdAt: row.created_at,
   };
 }

@@ -34,6 +34,17 @@ test("Square webhook verification, completed sale sync, and deduplication", asyn
         total_discount_money: { amount: 200 },
       },
     },
+    "/v2/orders/order-2": {
+      order: {
+        id: "order-2",
+        state: "COMPLETED",
+        closed_at: "2026-06-18T15:00:00Z",
+        line_items: [{ name: "Cake Slice", quantity: "2" }],
+        total_money: { amount: 1200 },
+        total_tax_money: { amount: 80 },
+        total_discount_money: { amount: 100 },
+      },
+    },
   };
   const service = createSquareService({
     env,
@@ -60,5 +71,68 @@ test("Square webhook verification, completed sale sync, and deduplication", asyn
   assert.equal(saveCount, 1);
   assert.ok(savedConnections.at(-1).lastSyncAt);
   assert.deepEqual(await service.processWebhook(JSON.parse(raw)), { accepted: true, duplicate: true });
-  assert.equal(saveCount, 1);
+  assert.deepEqual(
+    await service.processWebhook({ type: "order.updated", data: { id: "order-1" } }),
+    { accepted: true, duplicate: true },
+  );
+  assert.deepEqual(
+    await service.processWebhook({ type: "order.updated", data: { id: "order-2" } }),
+    { accepted: true, synced: true },
+  );
+  assert.equal(sales[0].squareOrderId, "order-2");
+  assert.equal(sales[0].source, "square");
+  assert.equal(saveCount, 2);
+});
+
+
+test("manual recent Square sync imports completed payments and reports duplicates", async () => {
+  const sales = [{ squarePaymentId: "payment-old", squareOrderId: "order-old" }];
+  const connection = { accessToken: "test-token", merchantId: "merchant-1" };
+  const env = {
+    SQUARE_ENVIRONMENT: "sandbox",
+    SQUARE_APPLICATION_ID: "app-id",
+    SQUARE_APPLICATION_SECRET: "app-secret",
+    SQUARE_OAUTH_REDIRECT_URL: "https://example.test/api/square/oauth/callback",
+    SQUARE_WEBHOOK_SIGNATURE_KEY: "signature-key",
+    SQUARE_WEBHOOK_URL: "https://example.test/api/square/webhook",
+    SQUARE_VERSION: "2026-05-20",
+  };
+  const service = createSquareService({
+    env,
+    storage: { async saveSquareConnection() {} },
+    connection,
+    getSales: () => sales,
+    saveSales: async () => {},
+    logActivity: async () => {},
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname;
+      const body = pathname === "/v2/payments"
+        ? {
+          payments: [
+            { id: "payment-new", order_id: "order-new", status: "COMPLETED", amount_money: { amount: 900 }, updated_at: "2026-06-20T12:00:00Z" },
+            { id: "payment-old", order_id: "order-old", status: "COMPLETED", amount_money: { amount: 500 } },
+            { id: "payment-pending", status: "PENDING", amount_money: { amount: 300 } },
+          ],
+        }
+        : {
+          order: {
+            id: "order-new",
+            line_items: [{ name: "Brownie", quantity: "3" }],
+            total_tax_money: { amount: 50 },
+            total_discount_money: { amount: 25 },
+          },
+        };
+      return { ok: true, async json() { return body; } };
+    },
+  });
+
+  const result = await service.syncRecentSales();
+  assert.equal(result.synced, 1);
+  assert.equal(result.duplicates, 1);
+  assert.equal(result.ignored, 1);
+  assert.equal(result.errors, 0);
+  assert.equal(sales[0].product, "Brownie");
+  assert.equal(sales[0].quantitySold, 3);
+  assert.equal(sales[0].source, "square");
+  assert.ok(connection.lastSyncAt);
 });

@@ -113,6 +113,11 @@ function startServer() {
         return sendJson(res, 200, squareService.status());
       }
 
+      if (url.pathname === "/api/square/sync" && req.method === "POST") {
+        const result = await squareService.syncRecentSales();
+        return sendJson(res, 200, result);
+      }
+
       if (url.pathname === "/api/receipts/parse" && req.method === "POST") {
         return parseReceiptUpload(req, res);
       }
@@ -404,15 +409,25 @@ async function saveReceiptApproval() {
 }
 
 function normalizeReceiptReview(input) {
-  const items = Array.isArray(input.items) ? input.items.map((item) => ({
-    itemName: requiredText(item.itemName, "Item name"),
-    quantity: requiredPositiveNumber(item.quantity, "Item quantity"),
-    unit: allowedValue(item.unit, ["lb", "oz", "g", "kg", "count", "dozen", "gallon"], "Item unit"),
-    unitPrice: requiredMoney(item.unitPrice, "Unit price"),
-    totalPrice: requiredMoney(item.totalPrice, "Total price"),
-    category: allowedValue(item.category, ["Ingredients", "Packaging", "Equipment", "Utilities", "Other"], "Item category"),
-    updateInventory: Boolean(item.updateInventory),
-  })) : [];
+  const items = Array.isArray(input.items) ? input.items.map((item) => {
+    const unit = allowedValue(item.unit, ["lb", "oz", "g", "kg", "count", "dozen", "gallon", "unknown"], "Item unit");
+    const isDiscount = Boolean(item.isDiscount);
+    const isFee = Boolean(item.isFee);
+    const isDeposit = Boolean(item.isDeposit);
+    return {
+      itemName: requiredText(item.itemName, "Item name"),
+      rawLine: optionalText(item.rawLine).slice(0, 300),
+      quantity: requiredPositiveNumber(item.quantity, "Item quantity"),
+      unit,
+      unitPrice: requiredMoney(item.unitPrice, "Unit price"),
+      totalPrice: requiredSignedMoney(item.totalPrice, "Total price"),
+      category: allowedValue(item.category, ["Ingredients", "Packaging", "Equipment", "Utilities", "Other"], "Item category"),
+      updateInventory: Boolean(item.updateInventory) && unit !== "unknown" && !isDiscount && !isFee && !isDeposit,
+      isDiscount,
+      isFee,
+      isDeposit,
+    };
+  }) : [];
   if (!items.length) throw validationError("No readable items found");
   return {
     storeName: requiredText(input.storeName, "Store name"),
@@ -1103,6 +1118,12 @@ function allowedValue(value, allowed, label) {
 
 function requiredMoney(value, label) {
   return requiredNonNegativeNumber(value, label);
+}
+
+function requiredSignedMoney(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) throw validationError(`${label} must be a number`);
+  return round(number);
 }
 
 function requiredPositiveNumber(value, label) {

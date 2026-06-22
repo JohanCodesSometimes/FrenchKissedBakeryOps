@@ -1,33 +1,41 @@
 const path = require("path");
 
-const ALLOWED_UNITS = ["lb", "oz", "g", "kg", "count", "dozen", "gallon"];
+const ALLOWED_UNITS = ["lb", "oz", "g", "kg", "count", "dozen", "gallon", "unknown"];
 const ALLOWED_CATEGORIES = ["Ingredients", "Packaging", "Equipment", "Utilities", "Other"];
 
 const receiptSchema = {
   type: "object",
   additionalProperties: false,
-  required: ["parseStatus", "storeName", "receiptDate", "subtotal", "tax", "total", "items"],
+  required: ["parseStatus", "storeName", "receiptDate", "subtotal", "tax", "total", "rawTextLines", "confidence", "warnings", "ignoredLines", "items"],
   properties: {
     parseStatus: { type: "string", enum: ["readable", "too_blurry", "no_items"] },
     storeName: { type: "string" },
     receiptDate: { type: "string", description: "YYYY-MM-DD, or an empty string when unreadable" },
-    subtotal: { type: "number", minimum: 0 },
-    tax: { type: "number", minimum: 0 },
-    total: { type: "number", minimum: 0 },
+    subtotal: { type: "number" },
+    tax: { type: "number" },
+    total: { type: "number" },
+    rawTextLines: { type: "array", items: { type: "string" } },
+    confidence: { type: "number", minimum: 0, maximum: 1 },
+    warnings: { type: "array", items: { type: "string" } },
+    ignoredLines: { type: "array", items: { type: "string" } },
     items: {
       type: "array",
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["itemName", "quantity", "unit", "unitPrice", "totalPrice", "category", "updateInventory"],
+        required: ["itemName", "rawLine", "quantity", "unit", "unitPrice", "totalPrice", "category", "updateInventory", "isDiscount", "isFee", "isDeposit"],
         properties: {
           itemName: { type: "string" },
-          quantity: { type: "number", exclusiveMinimum: 0 },
+          rawLine: { type: "string" },
+          quantity: { type: "number" },
           unit: { type: "string", enum: ALLOWED_UNITS },
-          unitPrice: { type: "number", minimum: 0 },
-          totalPrice: { type: "number", minimum: 0 },
+          unitPrice: { type: "number" },
+          totalPrice: { type: "number" },
           category: { type: "string", enum: ALLOWED_CATEGORIES },
           updateInventory: { type: "boolean" },
+          isDiscount: { type: "boolean" },
+          isFee: { type: "boolean" },
+          isDeposit: { type: "boolean" },
         },
       },
     },
@@ -37,6 +45,7 @@ const receiptSchema = {
 function createReceiptParser({ env = process.env, fetchImpl = globalThis.fetch, logger = console } = {}) {
   const apiKey = String(env.OPENAI_API_KEY || "").trim();
   const model = String(env.OPENAI_RECEIPT_MODEL || "gpt-4.1-mini").trim();
+  const development = env.NODE_ENV === "development";
 
   return {
     configured: Boolean(apiKey),
@@ -65,11 +74,13 @@ function createReceiptParser({ env = process.env, fetchImpl = globalThis.fetch, 
         });
       } catch (error) {
         logger.error(`[receipts] OpenAI request failed (${error.name || "Error"}).`);
+        debugFailure(logger, development, "OpenAI request failed");
         throw receiptError("AI parsing failed", 502, "ai_failed");
       }
 
       if (!response.ok) {
         logger.error(`[receipts] OpenAI returned HTTP ${response.status}; request ${response.headers?.get?.("x-request-id") || "unknown"}.`);
+        debugFailure(logger, development, `OpenAI HTTP ${response.status}`);
         throw receiptError("AI parsing failed", 502, "ai_failed");
       }
 
@@ -79,17 +90,23 @@ function createReceiptParser({ env = process.env, fetchImpl = globalThis.fetch, 
         payload = JSON.parse(extractOutputText(result));
       } catch (error) {
         logger.error(`[receipts] OpenAI response could not be parsed (${error.name || "Error"}).`);
+        debugFailure(logger, development, "Response JSON could not be parsed");
         throw receiptError("AI parsing failed", 502, "ai_failed");
       }
 
-      if (payload.parseStatus === "too_blurry") throw receiptError("Receipt too blurry", 422, "too_blurry");
-      if (payload.parseStatus === "no_items" || !Array.isArray(payload.items) || !payload.items.length) {
+      if (payload.parseStatus === "too_blurry") {
+        debugReceipt(logger, development, payload, stringList(payload.warnings), "Text could not be read");
+        throw receiptError("Receipt too blurry", 422, "too_blurry");
+      }
+
+      const normalized = normalizeReceipt(payload);
+      debugReceipt(logger, development, payload, normalized.warnings);
+
+      if (payload.parseStatus === "no_items" || !normalized.items.length) {
+        debugFailure(logger, development, "No usable line items remained after tolerant validation");
         throw receiptError("No readable items found", 422, "no_items");
       }
-      if (!payload.storeName?.trim() || !/^\d{4}-\d{2}-\d{2}$/.test(payload.receiptDate || "")) {
-        throw receiptError("Receipt details are unreadable", 422, "unreadable_details");
-      }
-      return normalizeReceipt(payload);
+      return normalized;
     },
   };
 }
@@ -115,30 +132,126 @@ function extractOutputText(result) {
 }
 
 function normalizeReceipt(receipt) {
-  const money = (value) => Math.round(Number(value || 0) * 100) / 100;
+  const warnings = stringList(receipt.warnings);
+  const rawTextLines = stringList(receipt.rawTextLines);
+  const ignoredLines = stringList(receipt.ignoredLines);
+  const storeName = String(receipt.storeName || "").trim().slice(0, 120);
+  let receiptDate = String(receipt.receiptDate || "").trim();
+
+  if (!storeName) warnings.push("Store name was not readable; enter it before approval.");
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(receiptDate)) {
+    receiptDate = "";
+    warnings.push("Receipt date was not readable; enter it before approval.");
+  }
+
+  const subtotal = tolerantMoney(receipt.subtotal, "Subtotal", warnings);
+  const tax = tolerantMoney(receipt.tax, "Tax", warnings);
+  const total = tolerantMoney(receipt.total, "Total", warnings);
+  const items = [];
+
+  for (const [index, source] of (Array.isArray(receipt.items) ? receipt.items : []).entries()) {
+    const rawLine = String(source?.rawLine || "").trim().slice(0, 300);
+    const itemName = String(source?.itemName || rawLine).trim().slice(0, 160);
+    if (!itemName) {
+      warnings.push(`Dropped line item ${index + 1} because its name was unreadable.`);
+      continue;
+    }
+
+    let quantity = Number(source.quantity);
+    if (!Number.isFinite(quantity) || quantity <= 0) {
+      quantity = 1;
+      warnings.push(`${itemName}: quantity was unclear and was set to 1.`);
+    }
+
+    const unit = ALLOWED_UNITS.includes(source.unit) ? source.unit : "unknown";
+    if (unit === "unknown") warnings.push(`${itemName}: unit was not shown.`);
+
+    let totalPrice = Number(source.totalPrice);
+    if (!Number.isFinite(totalPrice)) {
+      totalPrice = 0;
+      warnings.push(`${itemName}: total price was unclear and was set to 0.`);
+    }
+
+    let unitPrice = Number(source.unitPrice);
+    if (!Number.isFinite(unitPrice) || unitPrice < 0 || (unitPrice === 0 && totalPrice !== 0)) {
+      unitPrice = quantity > 0 ? Math.abs(totalPrice) / quantity : 0;
+      warnings.push(`${itemName}: unit price was estimated from the line total.`);
+    }
+
+    const isDiscount = Boolean(source.isDiscount);
+    const isFee = Boolean(source.isFee);
+    const isDeposit = Boolean(source.isDeposit);
+    const category = ALLOWED_CATEGORIES.includes(source.category) ? source.category : "Other";
+    items.push({
+      itemName,
+      rawLine,
+      quantity: round(quantity),
+      unit,
+      unitPrice: round(unitPrice),
+      totalPrice: round(totalPrice),
+      category,
+      updateInventory: Boolean(source.updateInventory) && unit !== "unknown" && !isDiscount && !isFee && !isDeposit,
+      isDiscount,
+      isFee,
+      isDeposit,
+    });
+  }
+
   return {
-    storeName: String(receipt.storeName).trim().slice(0, 120),
-    receiptDate: receipt.receiptDate,
-    subtotal: money(receipt.subtotal),
-    tax: money(receipt.tax),
-    total: money(receipt.total),
-    items: receipt.items.map((item) => ({
-      itemName: String(item.itemName).trim().slice(0, 160),
-      quantity: money(item.quantity),
-      unit: ALLOWED_UNITS.includes(item.unit) ? item.unit : "count",
-      unitPrice: money(item.unitPrice),
-      totalPrice: money(item.totalPrice),
-      category: ALLOWED_CATEGORIES.includes(item.category) ? item.category : "Other",
-      updateInventory: Boolean(item.updateInventory),
-    })).filter((item) => item.itemName && item.quantity > 0),
+    parseStatus: receipt.parseStatus === "readable" ? "readable" : receipt.parseStatus,
+    storeName,
+    receiptDate,
+    subtotal,
+    tax,
+    total,
+    rawTextLines,
+    confidence: Math.max(0, Math.min(1, Number(receipt.confidence) || 0)),
+    warnings: [...new Set(warnings)],
+    ignoredLines,
+    items,
   };
 }
 
+function tolerantMoney(value, label, warnings) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    warnings.push(`${label} was not readable and was set to 0.`);
+    return 0;
+  }
+  return round(number);
+}
+
+function stringList(value) {
+  return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 500) : [];
+}
+
+function round(value) {
+  return Math.round(Number(value) * 100) / 100;
+}
+
+function debugReceipt(logger, enabled, payload, warnings = [], reason = "") {
+  if (!enabled) return;
+  logger.log("[receipts:debug]", {
+    parseStatus: payload?.parseStatus || "missing",
+    itemCount: Array.isArray(payload?.items) ? payload.items.length : 0,
+    warnings,
+    rawTextLines: stringList(payload?.rawTextLines).slice(0, 5),
+    validationFailureReason: reason || null,
+  });
+}
+
+function debugFailure(logger, enabled, reason) {
+  if (enabled) logger.log("[receipts:debug]", { validationFailureReason: reason });
+}
+
 function receiptPrompt() {
-  return `Read this grocery or supplier receipt for a bakery owner. Extract only text and numbers that are visible; never invent missing values.
-Return parseStatus=too_blurry when the receipt cannot be read, or no_items when no purchasable line items are visible.
-Use YYYY-MM-DD for receiptDate. Use count when no physical unit is shown. unitPrice is the price for one extracted unit and totalPrice is the line total.
-Classify each item as Ingredients, Packaging, Equipment, Utilities, or Other. Set updateInventory true only for Ingredients or Packaging that represent stock the bakery can use. Exclude payment lines, loyalty savings summaries, balances, and subtotals from items.`;
+  return `Read this real-world grocery, convenience store, or supplier receipt for a bakery owner. Extract only text and numbers that are visible; never invent missing purchases.
+First transcribe every visible receipt line in reading order into rawTextLines. Then extract every visible purchasable line item, including convenience store items, groceries, drinks, snacks, bakery supplies, packaging, and ingredients. Do not reject or discard an item because it is not bakery-specific.
+Only use parseStatus=too_blurry when the receipt text cannot be read. Only use no_items when there are truly no visible line items. A partially readable receipt with one or more readable purchases is readable.
+Use YYYY-MM-DD for receiptDate, or an empty string when the date is unreadable. Store name may also be empty. Use 0 for unreadable subtotal, tax, or total and explain missing or uncertain fields in warnings.
+Preserve the visible source text for each item in rawLine. Use unknown or count when no unit is shown. When unitPrice is unclear, estimate it from totalPrice divided by a visible quantity. Never discard readable items simply because they are not inventory ingredients.
+Deposits, recycling fees, taxes, discounts, and coupons must not cause parsing failure. Put non-item summary lines in ignoredLines. If represented as items, mark isFee, isDeposit, or isDiscount accurately; discount totalPrice may be negative. Set updateInventory false for discounts, fees, deposits, and non-stock purchases.
+Classify ordinary purchases as Ingredients, Packaging, Equipment, Utilities, or Other. Return a confidence from 0 to 1 and concise warnings for uncertain fields.`;
 }
 
 function receiptError(message, statusCode, code) {

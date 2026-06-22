@@ -905,6 +905,18 @@ dialog.receipt-dialog {
   max-width: 920px;
 }
 
+
+.receipt-review-warnings {
+  margin-bottom: 16px;
+  padding: 12px 14px;
+  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--warn) 9%, var(--surface));
+}
+
+.receipt-review-warnings p { margin: 4px 0; color: var(--muted); }
+.receipt-review-warnings ul { margin: 8px 0 0; padding-left: 20px; }
+.receipt-line-flags { display: block; margin-top: 4px; color: var(--warn); font-size: 0.76rem; font-weight: 750; }
 .receipt-drop-zone {
   display: grid;
   justify-items: center;
