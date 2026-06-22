@@ -68,47 +68,11 @@ In the Square Developer Dashboard, add the exact OAuth redirect URL above. Creat
 
 After Railway redeploys, open Settings and select **Connect Square**. Access and refresh tokens are encrypted before storage, remain server-only, and are never sent to the browser. Completed payments are deduplicated by Square payment ID and saved through the active Supabase or JSON storage backend.
 
-## MarkItDown Document Preprocessing
+## Receipts
 
-MarkItDown is used only for PDFs, office documents, CSV, HTML, and text-based uploads. Grocery receipt photos never rely on MarkItDown: JPG, JPEG, PNG, and HEIC uploads go directly to OpenAI Vision. If text conversion fails or returns unusable text, the original document is sent as an OpenAI file input instead. Empty Markdown is never accepted as a successful parse.
+The Receipts page and previously stored receipt metadata remain available. Receipt AI uploads are temporarily disabled while the Railway deployment runs on the stable Node-only setup. The page displays: "Receipt AI temporarily disabled. Manual entry still available."
 
-Railway's Nixpacks configuration installs Node.js, Python, FFmpeg, and ExifTool, creates `.venv`, and installs MarkItDown inside that virtual environment. This avoids Nix's externally-managed system Python restriction. The deployment still starts with `npm start`, and the server automatically discovers `.venv/bin/python`. No extra Railway build command is required.
-
-```text
-PYTHON_BIN=
-MAX_DOCUMENT_UPLOAD_MB=20
-```
-
-The authenticated internal conversion endpoint is:
-
-```text
-POST /api/documents/convert
-X-File-Name: invoice.pdf
-Content-Type: application/octet-stream
-<raw file bytes>
-```
-
-Uploads are written to a private temporary file, converted by `scripts/convert_to_markdown.py`, and deleted immediately. Markdown remains server-side and is not returned by the endpoint or stored in Supabase. The endpoint returns only conversion status, character count, and whether a fallback parser is required.
-
-## Receipt Image Parsing
-
-Set these server-only Railway variables:
-
-```text
-OPENAI_API_KEY=<project API key>
-OPENAI_RECEIPT_MODEL=gpt-4.1-mini
-MAX_DOCUMENT_UPLOAD_MB=20
-```
-
-The API key is used only by the Node server. Receipt images are held in private temporary files, converted to a compatible JPEG when HEIC is uploaded, sent for structured receipt extraction, and then deleted. Parsed drafts expire after 30 minutes and must be reviewed before anything is saved.
-
-Open **Receipts** from the sidebar, then choose or drag in a JPG, JPEG, PNG, or PDF. The page shows byte-level upload progress followed by the extraction state. Its review area allows editing store/date/totals and every item name, quantity, unit, price, category, and inventory-update choice. Approval creates the expense and receipt line records, then updates selected inventory items and supplier price history. Receipt metadata and processing status remain visible in receipt history. Manual expense and inventory forms remain available.
-
-For local development, install Python dependencies once:
-
-```powershell
-python -m pip install -r requirements.txt
-```
+Use the existing manual Expense and Inventory forms until receipt extraction is reintroduced.
 
 Startup logs clearly show either Supabase mode or local JSON mode. Keep the Railway `/data` volume mounted until Supabase has been verified with production data.
 
@@ -152,8 +116,7 @@ Writes use a temporary file and rename step. Existing records from the previous 
 - Persistent activity log
 - Owner settings for business name and shopping target quantity
 - Square OAuth connection, signed webhooks, completed-payment sales sync, and duplicate prevention
-- Backend-only MarkItDown preprocessing with secure temporary files and vision fallback signaling
-- Grocery receipt vision parsing with editable review and approval before expense/inventory updates
+- Receipt history with receipt AI temporarily disabled
 
 ## Cost Conversions
 

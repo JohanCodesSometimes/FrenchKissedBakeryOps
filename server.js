@@ -1,12 +1,9 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
-const os = require("os");
 const crypto = require("crypto");
 const { createStorage } = require("./storage");
 const { createSquareService } = require("./square");
-const { convertToMarkdown, textFirstExtensions } = require("./document-converter");
-const { createReceiptParser } = require("./receipt-parser");
 
 const root = __dirname;
 const port = Number(process.env.PORT || 4173);
@@ -15,11 +12,6 @@ const username = process.env.BAKERYOPS_USER || "owner";
 const password = process.env.BAKERYOPS_PASSWORD;
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
 const collectionNames = ["expenses", "inventory", "recipes", "sales"];
-const documentExtensions = new Set([
-  ...textFirstExtensions,
-  ".png", ".jpg", ".jpeg", ".webp", ".heic", ".tif", ".tiff",
-]);
-const maxDocumentBytes = Math.max(1, Number(process.env.MAX_DOCUMENT_UPLOAD_MB || 20)) * 1024 * 1024;
 
 let storage;
 let collections;
@@ -32,7 +24,6 @@ let squareConnection;
 let squareService;
 let receiptItems;
 let receipts;
-let receiptParser;
 const receiptDrafts = new Map();
 
 const types = {
@@ -64,8 +55,6 @@ async function bootstrap() {
     logActivity,
   });
   console.log(`[square] ${squareService.status().configured ? "Configured" : "Not configured"}; ${squareService.status().connected ? "connected" : "disconnected"}.`);
-  receiptParser = createReceiptParser({ env: process.env, logger: console });
-  console.log(`[receipts] OpenAI Vision ${receiptParser.configured ? `configured (${receiptParser.model})` : "not configured"}.`);
   startServer();
 }
 
@@ -120,12 +109,8 @@ function startServer() {
         return sendJson(res, 200, squareService.status());
       }
 
-      if (url.pathname === "/api/documents/convert" && req.method === "POST") {
-        return convertUploadedDocument(req, res);
-      }
-
       if (url.pathname === "/api/receipts/parse" && req.method === "POST") {
-        return parseReceiptUpload(req, res);
+        return sendJson(res, 503, { error: "Receipt AI temporarily disabled. Manual entry still available." });
       }
 
       if (url.pathname === "/api/receipts" && req.method === "GET") {
@@ -133,7 +118,7 @@ function startServer() {
       }
 
       if (url.pathname === "/api/receipts/approve" && req.method === "POST") {
-        return approveReceipt(req, res);
+        return sendJson(res, 503, { error: "Receipt AI temporarily disabled. Manual entry still available." });
       }
 
       if (url.pathname === "/api/dashboard" && req.method === "GET") {
@@ -233,109 +218,6 @@ async function createRecord(collectionName, req, res) {
   if (collectionName === "inventory") await recordIngredientPrice(record, "created");
   await logActivity(`${collectionName}.created`, `${recordLabel(collectionName, record)} created`);
   sendJson(res, 201, enrichRecord(collectionName, record));
-}
-
-async function convertUploadedDocument(req, res) {
-  const originalName = safeUploadName(req.headers["x-file-name"]);
-  const extension = path.extname(originalName).toLowerCase();
-  if (!documentExtensions.has(extension)) {
-    const error = validationError("Unsupported document type");
-    error.statusCode = 415;
-    throw error;
-  }
-  const file = await readBufferBody(req, maxDocumentBytes);
-  if (!file.length) throw validationError("Uploaded document is empty");
-
-  const tempPath = path.join(os.tmpdir(), `bakeryops-${crypto.randomUUID()}${extension}`);
-  try {
-    await fs.promises.writeFile(tempPath, file, { mode: 0o600, flag: "wx" });
-    const converted = await convertToMarkdown(tempPath, { logger: console });
-    if (converted.ok) {
-      await logActivity("document.converted", `Document prepared with MarkItDown: ${originalName}`);
-    }
-    return sendJson(res, converted.ok ? 200 : 202, {
-      converted: converted.ok,
-      method: converted.method,
-      fallbackRequired: converted.fallbackRequired,
-      textFirst: converted.textFirst,
-      characterCount: converted.quality.characterCount,
-      fileName: originalName,
-    });
-  } finally {
-    await fs.promises.unlink(tempPath).catch(() => {});
-  }
-}
-
-async function parseReceiptUpload(req, res) {
-  purgeReceiptDrafts();
-  const originalName = safeUploadName(req.headers["x-file-name"]);
-  const extension = path.extname(originalName).toLowerCase();
-  if (!documentExtensions.has(extension)) {
-    const error = validationError("Unsupported receipt type");
-    error.statusCode = 415;
-    throw error;
-  }
-  const file = await readBufferBody(req, maxDocumentBytes);
-  if (!file.length) throw validationError("Uploaded receipt is empty");
-  const tempPath = path.join(os.tmpdir(), `bakeryops-receipt-${crypto.randomUUID()}${extension}`);
-  const receipt = {
-    id: crypto.randomUUID(),
-    expenseId: "",
-    fileName: originalName,
-    mimeType: optionalText(req.headers["content-type"] || "application/octet-stream").slice(0, 120),
-    fileSize: file.length,
-    extractionSource: "",
-    storeName: "",
-    receiptDate: "",
-    subtotal: 0,
-    tax: 0,
-    total: 0,
-    itemCount: 0,
-    status: "processing",
-    errorCode: "",
-    uploadedAt: new Date().toISOString(),
-    approvedAt: "",
-  };
-  receipts.unshift(receipt);
-  await storage.saveReceipts(receipts);
-  try {
-    await fs.promises.writeFile(tempPath, file, { mode: 0o600, flag: "wx" });
-    const parsed = await receiptParser.parse({ filePath: tempPath, fileName: originalName, fileBuffer: file });
-    const draftId = crypto.randomUUID();
-    Object.assign(receipt, {
-      extractionSource: parsed.source,
-      storeName: optionalText(parsed.storeName),
-      receiptDate: /^\d{4}-\d{2}-\d{2}$/.test(parsed.receiptDate || "") ? parsed.receiptDate : "",
-      subtotal: round(parsed.subtotal || 0),
-      tax: round(parsed.tax || 0),
-      total: round(parsed.total || 0),
-      itemCount: parsed.items.length,
-      status: "review",
-    });
-    await storage.saveReceipts(receipts);
-    receiptDrafts.set(draftId, { parsed, receiptId: receipt.id, expiresAt: Date.now() + 30 * 60 * 1000 });
-    return sendJson(res, 200, {
-      draftId,
-      receiptId: receipt.id,
-      expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
-      source: parsed.source,
-      storeName: parsed.storeName,
-      receiptDate: parsed.receiptDate,
-      subtotal: parsed.subtotal,
-      tax: parsed.tax,
-      total: parsed.total,
-      items: parsed.items,
-    });
-  } catch (error) {
-    receipt.status = "failed";
-    receipt.errorCode = ["Receipt too blurry", "No readable items found", "AI parsing failed"].includes(error.message)
-      ? error.message
-      : "AI parsing failed";
-    await storage.saveReceipts(receipts).catch((saveError) => console.error(`[receipts] Could not save failed upload metadata (${saveError.name}).`));
-    throw error;
-  } finally {
-    await fs.promises.unlink(tempPath).catch(() => {});
-  }
 }
 
 async function approveReceipt(req, res) {
@@ -502,15 +384,6 @@ function normalizeName(value) {
 function purgeReceiptDrafts() {
   const now = Date.now();
   for (const [id, draft] of receiptDrafts) if (draft.expiresAt <= now) receiptDrafts.delete(id);
-}
-
-function safeUploadName(header) {
-  let value = Array.isArray(header) ? header[0] : header;
-  try { value = decodeURIComponent(String(value || "")); }
-  catch { throw validationError("Invalid file name"); }
-  const name = path.basename(value).replace(/[^a-zA-Z0-9._ -]/g, "").trim();
-  if (!name || name.length > 180) throw validationError("A valid X-File-Name header is required");
-  return name;
 }
 
 async function updateRecord(collectionName, id, req, res) {
@@ -1119,33 +992,6 @@ function readRawBody(req) {
     });
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
-  });
-}
-
-function readBufferBody(req, limit) {
-  return new Promise((resolve, reject) => {
-    const chunks = [];
-    let size = 0;
-    let settled = false;
-    req.on("data", (chunk) => {
-      if (settled) return;
-      size += chunk.length;
-      if (size > limit) {
-        settled = true;
-        const error = validationError(`Document exceeds the ${Math.round(limit / 1024 / 1024)} MB upload limit`);
-        error.statusCode = 413;
-        reject(error);
-        req.resume();
-        return;
-      }
-      chunks.push(chunk);
-    });
-    req.on("end", () => {
-      if (!settled) resolve(Buffer.concat(chunks));
-    });
-    req.on("error", (error) => {
-      if (!settled) reject(error);
-    });
   });
 }
 
