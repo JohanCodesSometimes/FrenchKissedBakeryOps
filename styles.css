@@ -1158,6 +1158,12 @@ dialog::backdrop {
 .integration-details dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 .integration-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 
+.build-marker {
+  margin: -4px 0 14px;
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
 .import-help {
   margin-top: 20px;
   padding: 14px;

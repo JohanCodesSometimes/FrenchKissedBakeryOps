@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0e7c66" />
     <title>BakeryOps AI</title>
-    <link rel="stylesheet" href="styles.css" />
+    <link rel="stylesheet" href="styles.css?v=20260622-square-oauth-v2" />
   </head>
   <body>
     <div class="app-shell">
@@ -161,7 +161,7 @@
           <div class="settings-grid">
             <article class="panel"><div class="panel-header"><div><p class="eyebrow">Owner settings</p><h2>Business preferences</h2></div></div><form id="settings-form" class="settings-form"><label>Business Name<input name="businessName" type="text" maxlength="120" /></label><label>Owner Name<input name="ownerName" type="text" maxlength="120" /></label><label>Currency<select name="currency"><option value="USD">USD - US Dollar</option></select></label><label>Shopping Target Multiplier<input name="shoppingTargetMultiplier" type="number" min="1" max="10" step="0.5" /></label><button class="primary-button" type="submit">Save Settings</button></form></article>
             <article class="panel"><div class="panel-header"><div><p class="eyebrow">Backup</p><h2>Export all data</h2></div></div><p class="settings-copy">Download one JSON file containing settings, expenses, inventory, recipes, sales, price history, and activity.</p><a class="primary-button link-button full-width-button" href="/api/backup.json">Download Backup</a><div class="import-help"><strong>CSV column names</strong><p>Expenses: Date, Vendor, Category, Amount, Notes</p><p>Inventory: Ingredient Name, Quantity, Unit, Minimum Threshold, Supplier, Cost Per Unit</p><p>Sales: Date, Product, Quantity Sold, Sale Amount</p></div></article>
-            <article class="panel"><div class="panel-header"><div><p class="eyebrow">Point of sale</p><h2>Square</h2></div><span class="status-badge" id="square-status-badge">Checking</span></div><p class="settings-copy" id="square-status-copy">Checking Square connection status.</p><dl class="integration-details"><div><dt>Environment</dt><dd id="square-environment">-</dd></div><div><dt>Merchant</dt><dd id="square-merchant">Not connected</dd></div><div><dt>Last sync</dt><dd id="square-last-sync">Never</dd></div></dl><div class="integration-actions"><a class="primary-button link-button" id="square-connect" href="/api/square/connect">Connect Square</a><button class="secondary-button" id="square-sync" type="button" hidden>Sync Recent Square Sales</button><button class="ghost-button" id="square-disconnect" type="button" hidden>Disconnect</button></div></article>
+            <article class="panel"><div class="panel-header"><div><p class="eyebrow">Point of sale</p><h2>Square</h2></div><span class="status-badge" id="square-status-badge">Checking</span></div><p class="settings-copy" id="square-status-copy">Checking Square connection status.</p><p class="build-marker" id="square-build-marker">Square UI build 2026-06-22-oauth-v2</p><dl class="integration-details"><div><dt>Environment</dt><dd id="square-environment">-</dd></div><div><dt>Merchant</dt><dd id="square-merchant">Not connected</dd></div><div><dt>Last sync</dt><dd id="square-last-sync">Never</dd></div></dl><div class="integration-actions"><a class="primary-button link-button" id="square-connect" href="/api/square/connect">Connect Square</a><button class="secondary-button" id="square-sync" type="button" hidden>Sync Recent Square Sales</button><button class="ghost-button" id="square-disconnect" type="button" hidden>Disconnect</button></div></article>
           </div>
         </section>
       </main>
@@ -177,6 +177,6 @@
 
     <dialog id="recipe-detail-dialog" class="large-dialog"><div class="entry-form"><div class="dialog-header"><div><p class="eyebrow">Recipe details</p><h2 id="recipe-detail-title"></h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button></div><div id="recipe-detail-content"></div></div></dialog>
 
-    <script src="script.js"></script>
+    <script src="script.js?v=20260622-square-oauth-v2"></script>
   </body>
 </html>

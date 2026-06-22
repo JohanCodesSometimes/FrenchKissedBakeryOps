@@ -1,5 +1,7 @@
 const assert = require("node:assert/strict");
 const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
 const test = require("node:test");
 const { createSquareService } = require("../square");
 
@@ -161,14 +163,21 @@ test("Square OAuth uses the correct sandbox and production authorization hosts",
   }
 
   const sandbox = await authorizationUrl("sandbox");
-  assert.equal(sandbox.origin, "https://connect.squareupsandbox.com");
-  assert.equal(sandbox.pathname, "/oauth2/authorize");
+  assert.equal(`${sandbox.origin}${sandbox.pathname}`, "https://connect.squareupsandbox.com/oauth2/authorize");
   assert.equal(sandbox.searchParams.get("client_id"), "app-id");
   assert.equal(sandbox.searchParams.get("redirect_uri"), "https://example.test/api/square/oauth/callback");
   assert.equal(sandbox.searchParams.get("scope"), "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ");
   assert.ok(sandbox.searchParams.get("state"));
 
   const production = await authorizationUrl("production");
-  assert.equal(production.origin, "https://connect.squareup.com");
-  assert.equal(production.pathname, "/oauth2/authorize");
+  assert.equal(`${production.origin}${production.pathname}`, "https://connect.squareup.com/oauth2/authorize");
+});
+
+
+test("Settings Connect Square uses the backend route and exposes the deployment marker", () => {
+  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
+  assert.match(html, /id="square-connect" href="\/api\/square\/connect"/);
+  assert.match(html, /Square UI build 2026-06-22-oauth-v2/);
+  assert.match(html, /script\.js\?v=20260622-square-oauth-v2/);
+  assert.doesNotMatch(html, /https:\/\/squareupsandbox\.com\/oauth2\/authorize/);
 });

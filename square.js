@@ -49,7 +49,9 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
       state: connection.oauthState,
       redirect_uri: config.redirectUrl,
     });
-    return `${oauthAuthorizeUrl}?${query}`;
+    const authorizationUrl = `${oauthAuthorizeUrl}?${query}`;
+    console.log("[square] oauth url", authorizationUrl);
+    return authorizationUrl;
   }
 
   async function completeOAuth({ code, state, error, errorDescription }) {
