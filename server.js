@@ -4,6 +4,7 @@ const path = require("path");
 const crypto = require("crypto");
 const { createStorage } = require("./storage");
 const { createSquareService } = require("./square");
+const { createReceiptParser } = require("./receipt-parser");
 
 const root = __dirname;
 const port = Number(process.env.PORT || 4173);
@@ -24,6 +25,7 @@ let squareConnection;
 let squareService;
 let receiptItems;
 let receipts;
+let receiptParser;
 const receiptDrafts = new Map();
 
 const types = {
@@ -46,6 +48,8 @@ async function bootstrap() {
   squareConnection = state.squareConnection || {};
   receiptItems = state.receiptItems || [];
   receipts = state.receipts || [];
+  receiptParser = createReceiptParser({ env: process.env, logger: console });
+  console.log(`[receipts] OpenAI Vision ${receiptParser.configured ? "configured" : "not configured"}.`);
   squareService = createSquareService({
     env: process.env,
     storage,
@@ -110,7 +114,7 @@ function startServer() {
       }
 
       if (url.pathname === "/api/receipts/parse" && req.method === "POST") {
-        return sendJson(res, 503, { error: "Receipt AI temporarily disabled. Manual entry still available." });
+        return parseReceiptUpload(req, res);
       }
 
       if (url.pathname === "/api/receipts" && req.method === "GET") {
@@ -118,7 +122,7 @@ function startServer() {
       }
 
       if (url.pathname === "/api/receipts/approve" && req.method === "POST") {
-        return sendJson(res, 503, { error: "Receipt AI temporarily disabled. Manual entry still available." });
+        return approveReceipt(req, res);
       }
 
       if (url.pathname === "/api/dashboard" && req.method === "GET") {
@@ -218,6 +222,55 @@ async function createRecord(collectionName, req, res) {
   if (collectionName === "inventory") await recordIngredientPrice(record, "created");
   await logActivity(`${collectionName}.created`, `${recordLabel(collectionName, record)} created`);
   sendJson(res, 201, enrichRecord(collectionName, record));
+}
+
+async function parseReceiptUpload(req, res) {
+  purgeReceiptDrafts();
+  const fileName = safeUploadName(req.headers["x-file-name"]);
+  const mimeType = String(req.headers["content-type"] || "").split(";")[0].trim().toLowerCase();
+  const configuredLimit = Number(process.env.MAX_RECEIPT_UPLOAD_MB || 15);
+  const maxMegabytes = Number.isFinite(configuredLimit) ? Math.max(1, Math.min(25, configuredLimit)) : 15;
+  const fileBuffer = await readBufferBody(req, maxMegabytes * 1024 * 1024);
+  if (!fileBuffer.length) throw validationError("Choose a receipt image to upload");
+
+  const receiptId = crypto.randomUUID();
+  const receipt = {
+    id: receiptId, expenseId: "", fileName, mimeType, fileSize: fileBuffer.length,
+    extractionSource: "openai_vision", storeName: "", receiptDate: "",
+    subtotal: 0, tax: 0, total: 0, itemCount: 0, status: "processing",
+    errorCode: "", uploadedAt: new Date().toISOString(), approvedAt: "",
+  };
+  receipts.unshift(receipt);
+  await storage.saveReceipts(receipts);
+
+  try {
+    const parsed = await receiptParser.parse({ fileName, mimeType, fileBuffer });
+    Object.assign(receipt, {
+      storeName: parsed.storeName,
+      receiptDate: parsed.receiptDate,
+      subtotal: parsed.subtotal,
+      tax: parsed.tax,
+      total: parsed.total,
+      itemCount: parsed.items.length,
+      status: "review",
+    });
+    await storage.saveReceipts(receipts);
+    const draftId = crypto.randomUUID();
+    receiptDrafts.set(draftId, {
+      receiptId,
+      parsed,
+      expiresAt: Date.now() + 30 * 60 * 1000,
+      approving: false,
+    });
+    return sendJson(res, 200, { draftId, receiptId, ...parsed });
+  } catch (error) {
+    receipt.status = "failed";
+    receipt.errorCode = error.code || "ai_failed";
+    await storage.saveReceipts(receipts).catch((saveError) => {
+      console.error(`[receipts] Could not save failure metadata (${saveError.name}).`);
+    });
+    throw error;
+  }
 }
 
 async function approveReceipt(req, res) {
@@ -993,6 +1046,38 @@ function readRawBody(req) {
     req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
+}
+
+function readBufferBody(req, maxBytes) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    req.on("data", (chunk) => {
+      size += chunk.length;
+      if (size > maxBytes && !settled) {
+        settled = true;
+        const error = validationError(`Receipt image must be ${Math.floor(maxBytes / 1024 / 1024)} MB or smaller`);
+        error.statusCode = 413;
+        reject(error);
+        return;
+      }
+      if (!settled) chunks.push(chunk);
+    });
+    req.on("end", () => {
+      if (!settled) resolve(Buffer.concat(chunks));
+    });
+    req.on("error", (error) => {
+      if (!settled) reject(error);
+    });
+  });
+}
+
+function safeUploadName(value) {
+  let decoded = "receipt";
+  try { decoded = decodeURIComponent(String(value || "receipt")); }
+  catch { decoded = String(value || "receipt"); }
+  return path.basename(decoded).replace(/[^a-zA-Z0-9._ -]/g, "_").slice(0, 180) || "receipt";
 }
 
 function requiredText(value, label) {

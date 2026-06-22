@@ -905,16 +905,6 @@ dialog.receipt-dialog {
   max-width: 920px;
 }
 
-.receipt-disabled-notice {
-  margin-bottom: 14px;
-  padding: 12px 14px;
-  border: 1px solid color-mix(in srgb, var(--warn) 45%, var(--line));
-  border-radius: 8px;
-  background: color-mix(in srgb, var(--warn) 9%, var(--surface));
-  color: var(--ink);
-  font-weight: 750;
-}
-
 .receipt-drop-zone {
   display: grid;
   justify-items: center;

@@ -28,6 +28,7 @@ BAKERYOPS_USER=owner
 BAKERYOPS_PASSWORD=<strong password>
 HOST=0.0.0.0
 DATA_DIR=/data
+OPENAI_API_KEY=<OpenAI API key>
 ```
 
 Railway provides `PORT`. The persistent volume must remain mounted at `/data`.
@@ -68,11 +69,17 @@ In the Square Developer Dashboard, add the exact OAuth redirect URL above. Creat
 
 After Railway redeploys, open Settings and select **Connect Square**. Access and refresh tokens are encrypted before storage, remain server-only, and are never sent to the browser. Completed payments are deduplicated by Square payment ID and saved through the active Supabase or JSON storage backend.
 
-## Receipts
+## Receipt AI
 
-The Receipts page and previously stored receipt metadata remain available. Receipt AI uploads are temporarily disabled while the Railway deployment runs on the stable Node-only setup. The page displays: "Receipt AI temporarily disabled. Manual entry still available."
+Receipt images are parsed on the Node backend with OpenAI Vision. Add this server-only Railway variable:
 
-Use the existing manual Expense and Inventory forms until receipt extraction is reintroduced.
+```text
+OPENAI_API_KEY=<OpenAI API key>
+```
+
+The browser accepts JPG, JPEG, and PNG files up to 15 MB. Images are held in memory for parsing and the API key is never sent to the frontend. The owner reviews and edits every extracted line before approval creates an expense, receipt items, inventory changes, supplier price history, and an activity entry.
+
+Receipt AI does not use Python, MarkItDown, a virtual environment, or custom Nixpacks configuration. Manual Expense and Inventory entry remains available when receipt parsing is not configured or fails.
 
 Startup logs clearly show either Supabase mode or local JSON mode. Keep the Railway `/data` volume mounted until Supabase has been verified with production data.
 
@@ -116,7 +123,7 @@ Writes use a temporary file and rename step. Existing records from the previous 
 - Persistent activity log
 - Owner settings for business name and shopping target quantity
 - Square OAuth connection, signed webhooks, completed-payment sales sync, and duplicate prevention
-- Receipt history with receipt AI temporarily disabled
+- OpenAI Vision receipt extraction with editable review and approval
 
 ## Cost Conversions
 

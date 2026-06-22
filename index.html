@@ -86,11 +86,10 @@
         <section class="page-view" id="receipts-view" hidden>
           <article class="panel receipt-upload-panel">
             <div class="panel-header"><div><p class="eyebrow">Receipt intake</p><h2>Upload grocery receipt</h2></div></div>
-            <div class="receipt-disabled-notice">Receipt AI temporarily disabled. Manual entry still available.</div>
-            <input id="receipt-upload" type="file" accept=".jpg,.jpeg,.png,.pdf,image/jpeg,image/png,application/pdf" hidden />
+            <input id="receipt-upload" type="file" accept=".jpg,.jpeg,.png,image/jpeg,image/png" hidden />
             <div class="receipt-drop-zone" id="receipt-drop-zone" role="button" tabindex="0" aria-controls="receipt-upload">
               <strong>Drop a receipt here</strong>
-              <p>JPG, JPEG, PNG, or PDF up to 20 MB</p>
+              <p>JPG, JPEG, or PNG up to 15 MB</p>
               <button class="primary-button" id="receipt-upload-button" type="button">Choose Receipt</button>
             </div>
             <div class="receipt-progress" id="receipt-progress" hidden>

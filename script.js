@@ -109,8 +109,67 @@ function bindEvents() {
 
 async function parseReceipt(file) {
   if (!file) return;
-  document.querySelector("#receipt-upload").value = "";
-  showNotice("Receipt AI temporarily disabled. Manual entry still available.", "info");
+  const input = document.querySelector("#receipt-upload");
+  const progress = document.querySelector("#receipt-progress");
+  const progressBar = document.querySelector("#receipt-progress-bar");
+  const progressLabel = document.querySelector("#receipt-progress-label");
+  const progressValue = document.querySelector("#receipt-progress-value");
+  input.value = "";
+
+  if (!/\.(jpe?g|png)$/i.test(file.name) || file.type && !["image/jpeg", "image/jpg", "image/png"].includes(file.type)) {
+    return showNotice("Only JPG, JPEG, and PNG receipt images are supported", "error");
+  }
+  if (file.size > 15 * 1024 * 1024) return showNotice("Receipt image must be 15 MB or smaller", "error");
+
+  progress.hidden = false;
+  progressBar.value = 0;
+  progressLabel.textContent = "Uploading receipt";
+  progressValue.textContent = "0%";
+  try {
+    const receipt = await uploadReceipt(file, (percent) => {
+      progressBar.value = percent;
+      progressValue.textContent = `${percent}%`;
+      if (percent === 100) {
+        progressBar.removeAttribute("value");
+        progressLabel.textContent = "Reading receipt";
+        progressValue.textContent = "Working";
+      }
+    });
+    renderReceiptReview(receipt);
+    document.querySelector("#receipt-review-panel").hidden = false;
+    document.querySelector("#receipt-review-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+    showNotice("Receipt ready for review", "success");
+  } catch (error) {
+    showNotice(error.message, "error");
+  } finally {
+    progress.hidden = true;
+    progressBar.value = 0;
+    await refreshReceipts();
+  }
+}
+
+function uploadReceipt(file, onProgress) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open("POST", "/api/receipts/parse");
+    request.setRequestHeader("Content-Type", file.type || (/\.png$/i.test(file.name) ? "image/png" : "image/jpeg"));
+    request.setRequestHeader("X-File-Name", encodeURIComponent(file.name));
+    request.upload.addEventListener("progress", (event) => {
+      if (event.lengthComputable) onProgress(Math.round((event.loaded / event.total) * 100));
+    });
+    request.addEventListener("load", () => {
+      let result = {};
+      try { result = JSON.parse(request.responseText || "{}"); }
+      catch { return reject(new Error("AI parsing failed")); }
+      if (request.status < 200 || request.status >= 300) {
+        return reject(new Error(result.error || "AI parsing failed"));
+      }
+      resolve(result);
+    });
+    request.addEventListener("error", () => reject(new Error("Receipt upload failed")));
+    request.addEventListener("abort", () => reject(new Error("Receipt upload was canceled")));
+    request.send(file);
+  });
 }
 
 function bindReceiptDropZone() {
