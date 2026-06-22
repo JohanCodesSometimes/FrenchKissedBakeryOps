@@ -136,3 +136,39 @@ test("manual recent Square sync imports completed payments and reports duplicate
   assert.equal(sales[0].source, "square");
   assert.ok(connection.lastSyncAt);
 });
+
+
+test("Square OAuth uses the correct sandbox and production authorization hosts", async () => {
+  async function authorizationUrl(environment) {
+    const env = {
+      SQUARE_ENVIRONMENT: environment,
+      SQUARE_APPLICATION_ID: "app-id",
+      SQUARE_APPLICATION_SECRET: "app-secret",
+      SQUARE_OAUTH_REDIRECT_URL: "https://example.test/api/square/oauth/callback",
+      SQUARE_WEBHOOK_SIGNATURE_KEY: "signature-key",
+      SQUARE_WEBHOOK_URL: "https://example.test/api/square/webhook",
+      SQUARE_VERSION: "2026-05-20",
+    };
+    const service = createSquareService({
+      env,
+      storage: { async saveSquareConnection() {} },
+      connection: {},
+      getSales: () => [],
+      saveSales: async () => {},
+      logActivity: async () => {},
+    });
+    return new URL(await service.startOAuth());
+  }
+
+  const sandbox = await authorizationUrl("sandbox");
+  assert.equal(sandbox.origin, "https://connect.squareupsandbox.com");
+  assert.equal(sandbox.pathname, "/oauth2/authorize");
+  assert.equal(sandbox.searchParams.get("client_id"), "app-id");
+  assert.equal(sandbox.searchParams.get("redirect_uri"), "https://example.test/api/square/oauth/callback");
+  assert.equal(sandbox.searchParams.get("scope"), "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ");
+  assert.ok(sandbox.searchParams.get("state"));
+
+  const production = await authorizationUrl("production");
+  assert.equal(production.origin, "https://connect.squareup.com");
+  assert.equal(production.pathname, "/oauth2/authorize");
+});

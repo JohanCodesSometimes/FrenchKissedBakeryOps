@@ -5,6 +5,9 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
   const baseUrl = environment === "production"
     ? "https://connect.squareup.com"
     : "https://connect.squareupsandbox.com";
+  const oauthAuthorizeUrl = environment === "production"
+    ? "https://connect.squareup.com/oauth2/authorize"
+    : "https://connect.squareupsandbox.com/oauth2/authorize";
   const config = {
     environment,
     baseUrl,
@@ -46,7 +49,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
       state: connection.oauthState,
       redirect_uri: config.redirectUrl,
     });
-    return `${baseUrl}/oauth2/authorize?${query}`;
+    return `${oauthAuthorizeUrl}?${query}`;
   }
 
   async function completeOAuth({ code, state, error, errorDescription }) {
