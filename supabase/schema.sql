@@ -109,6 +109,7 @@ create table if not exists public.square_connections (
   access_token text,
   refresh_token text,
   token_expires_at timestamptz,
+  scopes text,
   connected_at timestamptz,
   last_sync_at timestamptz,
   last_error text,
@@ -172,6 +173,8 @@ alter table public.receipt_items
 alter table public.receipt_items
   add constraint receipt_items_unit_check
   check (unit in ('lb','oz','g','kg','count','dozen','gallon','unknown'));
+
+alter table public.square_connections add column if not exists scopes text;
 
 create index if not exists expenses_date_idx on public.expenses(date);
 create index if not exists sales_date_idx on public.sales(date);

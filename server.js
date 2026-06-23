@@ -58,7 +58,11 @@ async function bootstrap() {
     saveSales: () => saveCollection("sales"),
     logActivity,
   });
-  console.log(`[square] ${squareService.status().configured ? "Configured" : "Not configured"}; ${squareService.status().connected ? "connected" : "disconnected"}.`);
+  const squareStatus = squareService.status();
+  console.log(`[square] ${squareStatus.configured ? "Configured" : "Not configured"}; ${squareStatus.connected ? "connected" : "disconnected"}.`);
+  console.log(`[square] merchant stored: ${squareStatus.merchantId || "none"}`);
+  console.log(`[square] token expiration: ${squareStatus.tokenExpiresAt || "none"}`);
+  console.log(`[square] refresh token present: ${squareStatus.refreshTokenPresent}`);
   startServer();
 }
 
@@ -84,6 +88,7 @@ function startServer() {
       }
 
       if (url.pathname === "/api/square/webhook" && req.method === "POST") {
+        console.log("[square] webhook received");
         const rawBody = await readRawBody(req);
         const signature = req.headers["x-square-hmacsha256-signature"];
         if (!squareService.verifyWebhook(rawBody, signature)) {
@@ -92,6 +97,7 @@ function startServer() {
         let event;
         try { event = JSON.parse(rawBody); }
         catch { return sendJson(res, 400, { error: "Invalid JSON body" }); }
+        console.log(`[square] event type: ${event?.type || "unknown"}`);
         const result = await squareService.processWebhook(event);
         return sendJson(res, 200, result);
       }

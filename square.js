@@ -45,6 +45,8 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
       connectedAt: connection.connectedAt || null,
       lastSyncAt: connection.lastSyncAt || null,
       lastError: connection.lastError || null,
+      tokenExpiresAt: connection.tokenExpiresAt || "",
+      refreshTokenPresent: Boolean(connection.refreshToken),
     };
   }
 
@@ -93,6 +95,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     connection.oauthStateExpiresAt = "";
     connection.connectedAt = new Date().toISOString();
     connection.lastError = "";
+    connection.scopes = token.scopes || token.scope || config.scopes;
     await storage.saveSquareConnection(connection);
     await logActivity("square.connected", "Square account connected");
   }
@@ -122,7 +125,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     if (paymentTypes.has(event?.type)) {
       const paymentId = event.data?.id || event.data?.object?.payment?.id;
       if (!paymentId) return { accepted: true, ignored: true };
-      return { accepted: true, ...await syncPayment(paymentId) };
+      return { accepted: true, ...await syncPayment(paymentId, null, { eventType: event.type }) };
     }
 
     if (orderTypes.has(event?.type)) {
@@ -130,7 +133,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
         event.data?.object?.order_updated?.order_id ||
         event.data?.object?.order_created?.order_id;
       if (!orderId) return { accepted: true, ignored: true };
-      return { accepted: true, ...await syncOrder(orderId) };
+      return { accepted: true, ...await syncOrder(orderId, { eventType: event.type }) };
     }
 
     return { accepted: true, ignored: true };
@@ -157,7 +160,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
         for (const payment of result.payments || []) {
           try {
             const outcome = await syncPayment(payment.id, payment, { updateConnection: false, logSale: false });
-            if (outcome.synced) summary.synced += 1;
+            if (outcome.synced || outcome.updated) summary.synced += 1;
             else if (outcome.duplicate) summary.duplicates += 1;
             else summary.ignored += 1;
           } catch {
@@ -184,32 +187,24 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
   }
 
   async function syncPayment(paymentId, suppliedPayment = null, options = {}) {
-    if (isDuplicate(paymentId, "")) return { duplicate: true };
     const payment = suppliedPayment || (await squareRequest(`/v2/payments/${encodeURIComponent(paymentId)}`)).payment;
     if (!payment || payment.status !== "COMPLETED") return { ignored: true };
 
     const orderId = payment.order_id || "";
-    if (isDuplicate(payment.id, orderId)) return { duplicate: true };
     const order = orderId
       ? (await squareRequest(`/v2/orders/${encodeURIComponent(orderId)}`)).order || {}
       : {};
-    if (isDuplicate(payment.id, order.id || orderId)) return { duplicate: true };
-
     const sale = buildSale({ payment, order });
-    await persistSale(sale, options);
-    return { synced: true };
+    return persistSale(sale, options);
   }
 
   async function syncOrder(orderId, options = {}) {
-    if (isDuplicate("", orderId)) return { duplicate: true };
     const order = (await squareRequest(`/v2/orders/${encodeURIComponent(orderId)}`)).order;
     if (!order || order.state !== "COMPLETED") return { ignored: true };
 
     const paymentId = (order.tenders || []).map((tender) => tender.payment_id).find(Boolean) || "";
-    if (isDuplicate(paymentId, order.id)) return { duplicate: true };
     const sale = buildSale({ payment: paymentId ? { id: paymentId, order_id: order.id } : null, order });
-    await persistSale(sale, options);
-    return { synced: true };
+    return persistSale(sale, options);
   }
 
   function buildSale({ payment, order }) {
@@ -234,9 +229,33 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     };
   }
 
-  async function persistSale(sale, { updateConnection = true, logSale = true } = {}) {
+  async function persistSale(sale, { updateConnection = true, logSale = true, eventType = "" } = {}) {
     const sales = getSales();
-    if (isDuplicate(sale.squarePaymentId, sale.squareOrderId)) return;
+    const existing = findExistingSale(sale.squarePaymentId, sale.squareOrderId);
+    const now = new Date().toISOString();
+
+    if (existing) {
+      if (eventType.endsWith(".updated")) {
+        Object.assign(existing, {
+          ...sale,
+          id: existing.id,
+          createdAt: existing.createdAt || sale.createdAt,
+          updatedAt: now,
+        });
+        await saveSales();
+        if (updateConnection) {
+          connection.lastSyncAt = now;
+          connection.lastError = "";
+          await storage.saveSquareConnection(connection);
+        }
+        console.log("[square] sale updated", existing.squarePaymentId || existing.squareOrderId || existing.id);
+        if (logSale) await logActivity("square.sale.updated", `Square sale updated: ${existing.product}`);
+        return { updated: true };
+      }
+      console.log("[square] duplicate ignored", sale.squarePaymentId || sale.squareOrderId || "unknown");
+      return { duplicate: true };
+    }
+
     sales.unshift(sale);
     try {
       await saveSales();
@@ -247,15 +266,21 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     }
 
     if (updateConnection) {
-      connection.lastSyncAt = new Date().toISOString();
+      connection.lastSyncAt = now;
       connection.lastError = "";
       await storage.saveSquareConnection(connection);
     }
+    console.log("[square] sale created", sale.squarePaymentId || sale.squareOrderId || sale.id);
     if (logSale) await logActivity("square.sale.synced", `Square sale synced: ${sale.product}`);
+    return { synced: true };
   }
 
   function isDuplicate(paymentId, orderId) {
-    return getSales().some((sale) =>
+    return Boolean(findExistingSale(paymentId, orderId));
+  }
+
+  function findExistingSale(paymentId, orderId) {
+    return getSales().find((sale) =>
       (paymentId && sale.squarePaymentId === paymentId) ||
       (orderId && sale.squareOrderId === orderId),
     );
@@ -284,18 +309,26 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     const expiresSoon = connection.tokenExpiresAt && Date.parse(connection.tokenExpiresAt) < Date.now() + 5 * 60 * 1000;
     if (!expiresSoon) return decrypt(connection.accessToken, config.applicationSecret);
     if (!connection.refreshToken) throw publicError("Square authorization has expired. Reconnect Square.", 409);
-    const token = await squareRequest("/oauth2/token", {
-      method: "POST",
-      authenticated: false,
-      body: {
-        client_id: config.applicationId,
-        client_secret: config.applicationSecret,
-        grant_type: "refresh_token",
-        refresh_token: decrypt(connection.refreshToken, config.applicationSecret),
-      },
-    });
+
+    let token;
+    try {
+      token = await squareRequest("/oauth2/token", {
+        method: "POST",
+        authenticated: false,
+        body: {
+          client_id: config.applicationId,
+          client_secret: config.applicationSecret,
+          grant_type: "refresh_token",
+          refresh_token: decrypt(connection.refreshToken, config.applicationSecret),
+        },
+      });
+    } catch (error) {
+      console.error("[square] token refresh failed", error.message);
+      throw error;
+    }
     saveTokenResponse(token);
     await storage.saveSquareConnection(connection);
+    console.log("[square] token refreshed successfully");
     return decrypt(connection.accessToken, config.applicationSecret);
   }
 
@@ -304,8 +337,9 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     connection.refreshToken = token.refresh_token
       ? encrypt(token.refresh_token, config.applicationSecret)
       : connection.refreshToken;
-    connection.tokenExpiresAt = token.expires_at || "";
+    connection.tokenExpiresAt = token.expires_at || connection.tokenExpiresAt || "";
     connection.merchantId = token.merchant_id || connection.merchantId || "";
+    connection.scopes = token.scopes || token.scope || connection.scopes || config.scopes;
     connection.environment = config.environment;
   }
 

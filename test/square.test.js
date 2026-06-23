@@ -72,10 +72,11 @@ test("Square webhook verification, completed sale sync, and deduplication", asyn
   assert.equal(sales[0].discount, 2);
   assert.equal(saveCount, 1);
   assert.ok(savedConnections.at(-1).lastSyncAt);
-  assert.deepEqual(await service.processWebhook(JSON.parse(raw)), { accepted: true, duplicate: true });
+  assert.deepEqual(await service.processWebhook({ type: "payment.created", data: { id: "payment-1" } }), { accepted: true, duplicate: true });
+  assert.deepEqual(await service.processWebhook(JSON.parse(raw)), { accepted: true, updated: true });
   assert.deepEqual(
     await service.processWebhook({ type: "order.updated", data: { id: "order-1" } }),
-    { accepted: true, duplicate: true },
+    { accepted: true, ignored: true },
   );
   assert.deepEqual(
     await service.processWebhook({ type: "order.updated", data: { id: "order-2" } }),
@@ -83,7 +84,58 @@ test("Square webhook verification, completed sale sync, and deduplication", asyn
   );
   assert.equal(sales[0].squareOrderId, "order-2");
   assert.equal(sales[0].source, "square");
-  assert.equal(saveCount, 2);
+  assert.equal(saveCount, 3);
+});
+
+
+test("Square OAuth callback persists merchant, tokens, scopes, environment, and diagnostic status", async () => {
+  const savedConnections = [];
+  const connection = {
+    oauthState: "state-1",
+    oauthStateExpiresAt: new Date(Date.now() + 60_000).toISOString(),
+  };
+  const env = {
+    SQUARE_ENVIRONMENT: "sandbox",
+    SQUARE_CLIENT_ID: "app-id",
+    SQUARE_APPLICATION_SECRET: "app-secret",
+    SQUARE_REDIRECT_URI: "https://example.test/api/square/oauth/callback",
+    SQUARE_VERSION: "2026-05-20",
+  };
+  const service = createSquareService({
+    env,
+    storage: { async saveSquareConnection(value) { savedConnections.push({ ...value }); } },
+    connection,
+    getSales: () => [],
+    saveSales: async () => {},
+    logActivity: async () => {},
+    fetchImpl: async (url) => {
+      assert.equal(new URL(url).pathname, "/oauth2/token");
+      return { ok: true, async json() { return {
+        access_token: "access-token",
+        refresh_token: "refresh-token",
+        expires_at: "2026-06-24T00:00:00Z",
+        merchant_id: "merchant-123",
+        scopes: "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ",
+      }; } };
+    },
+  });
+
+  await service.completeOAuth({ code: "code-1", state: "state-1" });
+
+  assert.equal(connection.merchantId, "merchant-123");
+  assert.equal(connection.tokenExpiresAt, "2026-06-24T00:00:00Z");
+  assert.equal(connection.scopes, "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ");
+  assert.equal(connection.environment, "sandbox");
+  assert.ok(connection.accessToken.startsWith("v1."));
+  assert.ok(connection.refreshToken.startsWith("v1."));
+  assert.equal(savedConnections.at(-1).merchantId, "merchant-123");
+  assert.equal(savedConnections.at(-1).refreshToken, connection.refreshToken);
+  const status = service.status();
+  assert.equal(status.connected, true);
+  assert.equal(status.merchantId, "merchant-123");
+  assert.equal(status.environment, "sandbox");
+  assert.equal(status.tokenExpiresAt, "2026-06-24T00:00:00Z");
+  assert.equal(status.refreshTokenPresent, true);
 });
 
 
@@ -137,6 +189,57 @@ test("manual recent Square sync imports completed payments and reports duplicate
   assert.equal(sales[0].quantitySold, 3);
   assert.equal(sales[0].source, "square");
   assert.ok(connection.lastSyncAt);
+});
+
+
+test("Square refreshes expired access tokens before API calls", async () => {
+  const sales = [];
+  let tokenRefreshes = 0;
+  const savedConnections = [];
+  const connection = {
+    accessToken: "old-access-token",
+    refreshToken: "old-refresh-token",
+    tokenExpiresAt: "2020-01-01T00:00:00Z",
+    merchantId: "merchant-1",
+  };
+  const env = {
+    SQUARE_ENVIRONMENT: "sandbox",
+    SQUARE_CLIENT_ID: "app-id",
+    SQUARE_APPLICATION_SECRET: "app-secret",
+    SQUARE_REDIRECT_URI: "https://example.test/api/square/oauth/callback",
+    SQUARE_VERSION: "2026-05-20",
+  };
+  const service = createSquareService({
+    env,
+    storage: { async saveSquareConnection(value) { savedConnections.push({ ...value }); } },
+    connection,
+    getSales: () => sales,
+    saveSales: async () => {},
+    logActivity: async () => {},
+    fetchImpl: async (url, options) => {
+      const parsed = new URL(url);
+      if (parsed.pathname === "/oauth2/token") {
+        tokenRefreshes += 1;
+        assert.equal(JSON.parse(options.body).grant_type, "refresh_token");
+        return { ok: true, async json() { return {
+          access_token: "new-access-token",
+          refresh_token: "new-refresh-token",
+          expires_at: "2026-06-24T01:00:00Z",
+          merchant_id: "merchant-1",
+        }; } };
+      }
+      if (parsed.pathname === "/v2/payments") return { ok: true, async json() { return { payments: [] }; } };
+      return { ok: false, status: 404, async json() { return {}; } };
+    },
+  });
+
+  const result = await service.syncRecentSales();
+  assert.equal(result.synced, 0);
+  assert.equal(tokenRefreshes, 1);
+  assert.equal(connection.tokenExpiresAt, "2026-06-24T01:00:00Z");
+  assert.ok(connection.accessToken.startsWith("v1."));
+  assert.ok(connection.refreshToken.startsWith("v1."));
+  assert.equal(savedConnections.length >= 1, true);
 });
 
 
