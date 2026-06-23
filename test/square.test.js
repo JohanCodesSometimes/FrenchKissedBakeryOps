@@ -163,6 +163,7 @@ test("Square OAuth uses fresh state and the correct sandbox and production autho
   }
 
   const [sandbox, secondSandbox] = await authorizationUrls("sandbox");
+  assert.equal(sandbox.hostname, "connect.squareupsandbox.com");
   assert.equal(`${sandbox.origin}${sandbox.pathname}`, "https://connect.squareupsandbox.com/oauth2/authorize");
   assert.equal(sandbox.searchParams.get("client_id"), "app-id");
   assert.equal(sandbox.searchParams.get("redirect_uri"), "https://example.test/api/square/oauth/callback");
@@ -194,6 +195,7 @@ test("Square OAuth uses fresh state and the correct sandbox and production autho
   assert.equal(secondDynamic.searchParams.get("redirect_uri"), "https://second.example.test/api/square/oauth/callback");
 
   const [production] = await authorizationUrls("production");
+  assert.equal(production.hostname, "connect.squareup.com");
   assert.equal(`${production.origin}${production.pathname}`, "https://connect.squareup.com/oauth2/authorize");
 });
 

@@ -1,18 +1,24 @@
 const crypto = require("crypto");
 
+const SQUARE_ENVIRONMENTS = {
+  sandbox: {
+    baseUrl: "https://connect.squareupsandbox.com",
+    oauthAuthorizeUrl: "https://connect.squareupsandbox.com/oauth2/authorize",
+  },
+  production: {
+    baseUrl: "https://connect.squareup.com",
+    oauthAuthorizeUrl: "https://connect.squareup.com/oauth2/authorize",
+  },
+};
+
 function createSquareService({ env, storage, connection, getSales, saveSales, logActivity, fetchImpl = fetch }) {
   const squareEnabled = isSquareEnabled(env);
   const rawEnvironment = String(env.SQUARE_ENVIRONMENT || "sandbox").trim().toLowerCase();
   const environment = rawEnvironment === "production" ? "production" : "sandbox";
-  const baseUrl = environment === "production"
-    ? "https://connect.squareup.com"
-    : "https://connect.squareupsandbox.com";
-  const oauthAuthorizeUrl = environment === "production"
-    ? "https://connect.squareup.com/oauth2/authorize"
-    : "https://connect.squareupsandbox.com/oauth2/authorize";
+  const endpoints = SQUARE_ENVIRONMENTS[environment];
   const config = {
     environment,
-    baseUrl,
+    baseUrl: endpoints.baseUrl,
     applicationId: env.SQUARE_CLIENT_ID || env.SQUARE_APPLICATION_ID || "",
     applicationSecret: env.SQUARE_APPLICATION_SECRET || "",
     redirectUrl: env.SQUARE_REDIRECT_URI || env.SQUARE_OAUTH_REDIRECT_URL || "",
@@ -20,7 +26,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     webhookUrl: env.SQUARE_WEBHOOK_URL || "",
     version: env.SQUARE_VERSION || "2026-05-20",
     scopes: "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ",
-    oauthAuthorizeUrl,
+    oauthAuthorizeUrl: endpoints.oauthAuthorizeUrl,
     squareEnabled,
   };
   validateStartupConfig(env, config, rawEnvironment);
@@ -315,13 +321,10 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
       throw publicError(`SQUARE_ENVIRONMENT must be "sandbox" or "production"; received "${env.SQUARE_ENVIRONMENT}".`, 503);
     }
     const latestEnvironment = latestRawEnvironment === "production" ? "production" : "sandbox";
+    const latestEndpoints = SQUARE_ENVIRONMENTS[latestEnvironment];
     config.environment = latestEnvironment;
-    config.baseUrl = latestEnvironment === "production"
-      ? "https://connect.squareup.com"
-      : "https://connect.squareupsandbox.com";
-    config.oauthAuthorizeUrl = latestEnvironment === "production"
-      ? "https://connect.squareup.com/oauth2/authorize"
-      : "https://connect.squareupsandbox.com/oauth2/authorize";
+    config.baseUrl = latestEndpoints.baseUrl;
+    config.oauthAuthorizeUrl = latestEndpoints.oauthAuthorizeUrl;
     config.applicationId = env.SQUARE_CLIENT_ID || env.SQUARE_APPLICATION_ID || "";
     config.applicationSecret = env.SQUARE_APPLICATION_SECRET || "";
     config.redirectUrl = env.SQUARE_REDIRECT_URI || env.SQUARE_OAUTH_REDIRECT_URL || "";
