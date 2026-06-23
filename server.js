@@ -997,19 +997,9 @@ function serveStatic(pathname, res) {
       res.end("Not found");
       return;
     }
-    res.writeHead(200, { "Content-Type": types[path.extname(filePath)], ...staticNoCacheHeaders(filePath) });
+    res.writeHead(200, { "Content-Type": types[path.extname(filePath)] });
     res.end(body);
   });
-}
-
-function staticNoCacheHeaders(filePath) {
-  const name = path.basename(filePath);
-  if (!["index.html", "script.js", "square-connect-fix.js"].includes(name)) return {};
-  return {
-    "Cache-Control": "no-store, no-cache, must-revalidate",
-    Pragma: "no-cache",
-    Expires: "0",
-  };
 }
 
 function isAuthorized(req) {

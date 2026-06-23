@@ -1,43 +1,32 @@
 (() => {
-  const allowedHosts = new Set(["connect.squareupsandbox.com", "connect.squareup.com"]);
-
   document.addEventListener("DOMContentLoaded", () => {
     const button = document.querySelector("#square-connect");
     if (!button) return;
 
     const cleanButton = button.cloneNode(true);
     button.replaceWith(cleanButton);
-    cleanButton.addEventListener("click", connectSquare, { capture: true });
+    cleanButton.addEventListener("click", connectSquare);
   });
 
   async function connectSquare(event) {
     event.preventDefault();
-    event.stopPropagation();
+    event.stopImmediatePropagation();
 
-    const button = event.currentTarget;
-    const originalText = button.textContent;
-    button.disabled = true;
-    button.textContent = "Connecting...";
-
+    const status = document.querySelector("#square-status-copy");
     try {
-      const response = await fetch("/api/square/oauth-url?ts=" + Date.now(), { cache: "no-store" });
-      const data = await response.json().catch(() => ({}));
-      if (!response.ok || !data.url) throw new Error(data.error || "Could not start Square connection");
+      const response = await fetch("/api/square/oauth-url", { cache: "no-store" });
+      const data = await response.json();
+      if (!data.url) throw new Error("Square OAuth URL was missing from the server response");
 
-      console.log("[square-final] URL:", data.url);
-      const oauthUrl = new URL(data.url);
-      if (!allowedHosts.has(oauthUrl.hostname)) {
-        window.alert("Unexpected Square OAuth host: " + oauthUrl.hostname);
-        button.textContent = originalText;
-        button.disabled = false;
-        return;
+      const parsed = new URL(data.url);
+      if (parsed.hostname !== "connect.squareupsandbox.com" && parsed.hostname !== "connect.squareup.com") {
+        throw new Error("Unexpected Square OAuth host: " + parsed.hostname);
       }
 
-      window.location.replace(data.url);
+      window.location.href = data.url;
     } catch (error) {
-      window.alert(error.message || "Could not start Square connection");
-      button.textContent = originalText;
-      button.disabled = false;
+      console.error("[square-connect-fix] failed", error);
+      if (status) status.textContent = error.message || "Could not start Square connection";
     }
   }
 })();
