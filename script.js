@@ -390,9 +390,14 @@ async function connectSquare() {
       credentials: "same-origin",
       headers: { Accept: "application/json" },
     });
-    const result = await response.json().catch(() => ({}));
-    if (!response.ok || !result.url) throw new Error(result.error || "Could not start Square connection");
-    window.location.assign(result.url);
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || !data.url) throw new Error(data.error || "Could not start Square connection");
+    const oauthUrl = new URL(data.url);
+    if (!["connect.squareupsandbox.com", "connect.squareup.com"].includes(oauthUrl.hostname)) {
+      throw new Error("Square returned an unexpected OAuth host");
+    }
+    console.log("[square] Redirecting to OAuth host:", oauthUrl.hostname);
+    window.location.assign(data.url);
   } catch (error) {
     showNotice(error.message, "error");
     button.textContent = originalText;

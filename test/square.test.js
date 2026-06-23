@@ -204,11 +204,13 @@ test("Settings Connect Square fetches a fresh backend OAuth URL and exposes the 
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   const script = fs.readFileSync(path.join(__dirname, "..", "script.js"), "utf8");
   assert.match(html, /id="square-connect" type="button"/);
-  assert.match(html, /Square UI build 2026-06-23-oauth-fresh/);
-  assert.match(html, /script\.js\?v=20260623-square-oauth-fresh/);
-  assert.match(script, /fetch\("\/api\/square\/oauth-url"/);
+  assert.match(html, /Square UI build 2026-06-23-oauth-handler-fix/);
+  assert.match(html, /script\.js\?v=2026-06-23-oauth-handler-fix/);
+  assert.match(script, /fetch\("\/api\/square\/oauth-url", \{[\s\S]*cache: "no-store"/);
+  assert.match(script, /new URL\(data\.url\)/);
+  assert.match(script, /console\.log\("\[square\] Redirecting to OAuth host:", oauthUrl\.hostname\)/);
   assert.doesNotMatch(html, /connect\.squareup(?:sandbox)?\.com\/oauth2\/authorize/);
-  assert.doesNotMatch(script, /connect\.squareup(?:sandbox)?\.com\/oauth2\/authorize/);
+  assert.doesNotMatch(script, new RegExp("https://" + "squareupsandbox\\.com", "i"));
 });
 
 test("repo has no stale Railway, localhost, or hardcoded frontend OAuth callback URLs", () => {
@@ -218,4 +220,22 @@ test("repo has no stale Railway, localhost, or hardcoded frontend OAuth callback
   assert.doesNotMatch(combined, /https?:\/\/localhost[^\s"']*\/api\/square\/oauth\/callback/i);
   assert.doesNotMatch(combined, /https?:\/\/127\.0\.0\.1[^\s"']*\/api\/square\/oauth\/callback/i);
   assert.doesNotMatch(combined, /https?:\/\/[^\s"'<]*railway[^\s"'>]*\/api\/square\/oauth\/callback/i);
+});
+
+test("frontend Square OAuth handler has no stale fallback redirects", () => {
+  const root = path.join(__dirname, "..");
+  const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
+  const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+  const frontend = html + "\n" + script;
+  assert.doesNotMatch(frontend, new RegExp("https://" + "squareupsandbox\\.com", "i"));
+  assert.doesNotMatch(frontend, new RegExp("(^|[^.])" + "squareupsandbox\\.com/oauth2/authorize", "i"));
+  assert.doesNotMatch(script, /\/api\/square\/connect/);
+  const start = script.indexOf("async function connectSquare()");
+  const end = script.indexOf("async function syncRecentSquareSales()", start);
+  const handler = start >= 0 && end > start ? script.slice(start, end) : "";
+  assert.match(handler, /fetch\("\/api\/square\/oauth-url", \{[\s\S]*cache: "no-store"/);
+  assert.match(handler, /new URL\(data\.url\)/);
+  assert.match(handler, /includes\(oauthUrl\.hostname\)/);
+  assert.match(handler, /window\.location\.assign\(data\.url\)/);
+  assert.doesNotMatch(handler, /window\.location\.assign\((?!data\.url\))/);
 });
