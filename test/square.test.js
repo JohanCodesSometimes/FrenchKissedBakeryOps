@@ -11,9 +11,9 @@ test("Square webhook verification, completed sale sync, and deduplication", asyn
   let saveCount = 0;
   const env = {
     SQUARE_ENVIRONMENT: "sandbox",
-    SQUARE_APPLICATION_ID: "app-id",
+    SQUARE_CLIENT_ID: "app-id",
     SQUARE_APPLICATION_SECRET: "app-secret",
-    SQUARE_OAUTH_REDIRECT_URL: "https://example.test/api/square/oauth/callback",
+    SQUARE_REDIRECT_URI: "https://example.test/api/square/oauth/callback",
     SQUARE_WEBHOOK_SIGNATURE_KEY: "signature-key",
     SQUARE_WEBHOOK_URL: "https://example.test/api/square/webhook",
     SQUARE_VERSION: "2026-05-20",
@@ -92,9 +92,9 @@ test("manual recent Square sync imports completed payments and reports duplicate
   const connection = { accessToken: "test-token", merchantId: "merchant-1" };
   const env = {
     SQUARE_ENVIRONMENT: "sandbox",
-    SQUARE_APPLICATION_ID: "app-id",
+    SQUARE_CLIENT_ID: "app-id",
     SQUARE_APPLICATION_SECRET: "app-secret",
-    SQUARE_OAUTH_REDIRECT_URL: "https://example.test/api/square/oauth/callback",
+    SQUARE_REDIRECT_URI: "https://example.test/api/square/oauth/callback",
     SQUARE_WEBHOOK_SIGNATURE_KEY: "signature-key",
     SQUARE_WEBHOOK_URL: "https://example.test/api/square/webhook",
     SQUARE_VERSION: "2026-05-20",
@@ -140,13 +140,13 @@ test("manual recent Square sync imports completed payments and reports duplicate
 });
 
 
-test("Square OAuth uses the correct sandbox and production authorization hosts", async () => {
-  async function authorizationUrl(environment) {
+test("Square OAuth uses fresh state and the correct sandbox and production authorization hosts", async () => {
+  async function authorizationUrls(environment) {
     const env = {
       SQUARE_ENVIRONMENT: environment,
-      SQUARE_APPLICATION_ID: "app-id",
+      SQUARE_CLIENT_ID: "app-id",
       SQUARE_APPLICATION_SECRET: "app-secret",
-      SQUARE_OAUTH_REDIRECT_URL: "https://example.test/api/square/oauth/callback",
+      SQUARE_REDIRECT_URI: "https://example.test/api/square/oauth/callback",
       SQUARE_WEBHOOK_SIGNATURE_KEY: "signature-key",
       SQUARE_WEBHOOK_URL: "https://example.test/api/square/webhook",
       SQUARE_VERSION: "2026-05-20",
@@ -159,25 +159,61 @@ test("Square OAuth uses the correct sandbox and production authorization hosts",
       saveSales: async () => {},
       logActivity: async () => {},
     });
-    return new URL(await service.startOAuth());
+    return [new URL(await service.startOAuth()), new URL(await service.startOAuth())];
   }
 
-  const sandbox = await authorizationUrl("sandbox");
+  const [sandbox, secondSandbox] = await authorizationUrls("sandbox");
   assert.equal(`${sandbox.origin}${sandbox.pathname}`, "https://connect.squareupsandbox.com/oauth2/authorize");
   assert.equal(sandbox.searchParams.get("client_id"), "app-id");
   assert.equal(sandbox.searchParams.get("redirect_uri"), "https://example.test/api/square/oauth/callback");
   assert.equal(sandbox.searchParams.get("scope"), "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ");
-  assert.ok(sandbox.searchParams.get("state"));
+  assert.notEqual(sandbox.searchParams.get("state"), secondSandbox.searchParams.get("state"));
 
-  const production = await authorizationUrl("production");
+  const mutableEnv = {
+    SQUARE_ENVIRONMENT: "sandbox",
+    SQUARE_CLIENT_ID: "app-id",
+    SQUARE_APPLICATION_SECRET: "app-secret",
+    SQUARE_REDIRECT_URI: "https://first.example.test/api/square/oauth/callback",
+    SQUARE_VERSION: "2026-05-20",
+  };
+  const mutableService = createSquareService({
+    env: mutableEnv,
+    storage: { async saveSquareConnection() {} },
+    connection: {},
+    getSales: () => [],
+    saveSales: async () => {},
+    logActivity: async () => {},
+  });
+  const firstDynamic = new URL(await mutableService.startOAuth());
+  mutableEnv.SQUARE_ENVIRONMENT = "production";
+  mutableEnv.SQUARE_REDIRECT_URI = "https://second.example.test/api/square/oauth/callback";
+  const secondDynamic = new URL(await mutableService.startOAuth());
+  assert.equal(firstDynamic.hostname, "connect.squareupsandbox.com");
+  assert.equal(firstDynamic.searchParams.get("redirect_uri"), "https://first.example.test/api/square/oauth/callback");
+  assert.equal(secondDynamic.hostname, "connect.squareup.com");
+  assert.equal(secondDynamic.searchParams.get("redirect_uri"), "https://second.example.test/api/square/oauth/callback");
+
+  const [production] = await authorizationUrls("production");
   assert.equal(`${production.origin}${production.pathname}`, "https://connect.squareup.com/oauth2/authorize");
 });
 
 
-test("Settings Connect Square uses the backend route and exposes the deployment marker", () => {
+test("Settings Connect Square fetches a fresh backend OAuth URL and exposes the deployment marker", () => {
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
-  assert.match(html, /id="square-connect" href="\/api\/square\/connect"/);
-  assert.match(html, /Square UI build 2026-06-22-oauth-v2/);
-  assert.match(html, /script\.js\?v=20260622-square-oauth-v2/);
-  assert.doesNotMatch(html, /https:\/\/squareupsandbox\.com\/oauth2\/authorize/);
+  const script = fs.readFileSync(path.join(__dirname, "..", "script.js"), "utf8");
+  assert.match(html, /id="square-connect" type="button"/);
+  assert.match(html, /Square UI build 2026-06-23-oauth-fresh/);
+  assert.match(html, /script\.js\?v=20260623-square-oauth-fresh/);
+  assert.match(script, /fetch\("\/api\/square\/oauth-url"/);
+  assert.doesNotMatch(html, /connect\.squareup(?:sandbox)?\.com\/oauth2\/authorize/);
+  assert.doesNotMatch(script, /connect\.squareup(?:sandbox)?\.com\/oauth2\/authorize/);
+});
+
+test("repo has no stale Railway, localhost, or hardcoded frontend OAuth callback URLs", () => {
+  const root = path.join(__dirname, "..");
+  const files = ["index.html", "script.js", "styles.css", "README.md", "server.js"];
+  const combined = files.map((file) => fs.readFileSync(path.join(root, file), "utf8")).join("\n");
+  assert.doesNotMatch(combined, /https?:\/\/localhost[^\s"']*\/api\/square\/oauth\/callback/i);
+  assert.doesNotMatch(combined, /https?:\/\/127\.0\.0\.1[^\s"']*\/api\/square\/oauth\/callback/i);
+  assert.doesNotMatch(combined, /https?:\/\/[^\s"'<]*railway[^\s"'>]*\/api\/square\/oauth\/callback/i);
 });

@@ -1,7 +1,9 @@
 const crypto = require("crypto");
 
 function createSquareService({ env, storage, connection, getSales, saveSales, logActivity, fetchImpl = fetch }) {
-  const environment = env.SQUARE_ENVIRONMENT === "production" ? "production" : "sandbox";
+  const squareEnabled = isSquareEnabled(env);
+  const rawEnvironment = String(env.SQUARE_ENVIRONMENT || "sandbox").trim().toLowerCase();
+  const environment = rawEnvironment === "production" ? "production" : "sandbox";
   const baseUrl = environment === "production"
     ? "https://connect.squareup.com"
     : "https://connect.squareupsandbox.com";
@@ -11,24 +13,28 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
   const config = {
     environment,
     baseUrl,
-    applicationId: env.SQUARE_APPLICATION_ID || "",
+    applicationId: env.SQUARE_CLIENT_ID || env.SQUARE_APPLICATION_ID || "",
     applicationSecret: env.SQUARE_APPLICATION_SECRET || "",
-    redirectUrl: env.SQUARE_OAUTH_REDIRECT_URL || "",
+    redirectUrl: env.SQUARE_REDIRECT_URI || env.SQUARE_OAUTH_REDIRECT_URL || "",
     signatureKey: env.SQUARE_WEBHOOK_SIGNATURE_KEY || "",
     webhookUrl: env.SQUARE_WEBHOOK_URL || "",
     version: env.SQUARE_VERSION || "2026-05-20",
+    scopes: "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ",
+    oauthAuthorizeUrl,
+    squareEnabled,
   };
+  validateStartupConfig(env, config, rawEnvironment);
 
   const configured = () => Boolean(
-    config.applicationId && config.applicationSecret && config.redirectUrl &&
-    config.signatureKey && config.webhookUrl,
+    config.applicationId && config.applicationSecret && config.redirectUrl,
   );
 
   function status() {
+    refreshConfig();
     return {
       configured: configured(),
       connected: Boolean(connection.accessToken && connection.merchantId),
-      environment,
+      environment: config.environment,
       merchantId: connection.merchantId || null,
       connectedAt: connection.connectedAt || null,
       lastSyncAt: connection.lastSyncAt || null,
@@ -40,17 +46,19 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     requireConfigured();
     connection.oauthState = crypto.randomBytes(32).toString("hex");
     connection.oauthStateExpiresAt = new Date(Date.now() + 10 * 60 * 1000).toISOString();
-    connection.environment = environment;
+    connection.environment = config.environment;
     await storage.saveSquareConnection(connection);
     const query = new URLSearchParams({
       client_id: config.applicationId,
-      scope: "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ",
+      scope: config.scopes,
       session: "false",
       state: connection.oauthState,
       redirect_uri: config.redirectUrl,
     });
-    const authorizationUrl = `${oauthAuthorizeUrl}?${query}`;
-    console.log("[square] oauth url", authorizationUrl);
+    const authorizationUrl = `${config.oauthAuthorizeUrl}?${query}`;
+    console.log(
+      `[square] Generated OAuth URL host=${new URL(config.oauthAuthorizeUrl).host} redirect_uri=${config.redirectUrl} state=${connection.oauthState.slice(0, 8)}...`,
+    );
     return authorizationUrl;
   }
 
@@ -86,12 +94,13 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
   async function disconnect() {
     const merchantId = connection.merchantId;
     Object.keys(connection).forEach((key) => delete connection[key]);
-    connection.environment = environment;
+    connection.environment = config.environment;
     await storage.saveSquareConnection(connection);
     await logActivity("square.disconnected", `Square account disconnected${merchantId ? ` (${merchantId})` : ""}`);
   }
 
   function verifyWebhook(rawBody, signature) {
+    refreshConfig();
     if (!config.signatureKey || !config.webhookUrl || !signature) return false;
     const expected = crypto
       .createHmac("sha256", config.signatureKey)
@@ -247,9 +256,10 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
   }
 
   async function squareRequest(path, options = {}) {
+    refreshConfig();
     const headers = { "Content-Type": "application/json", "Square-Version": config.version };
     if (options.authenticated !== false) headers.Authorization = `Bearer ${await accessToken()}`;
-    const response = await fetchImpl(`${baseUrl}${path}`, {
+    const response = await fetchImpl(`${config.baseUrl}${path}`, {
       method: options.method || "GET",
       headers,
       body: options.body ? JSON.stringify(options.body) : undefined,
@@ -263,6 +273,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
   }
 
   async function accessToken() {
+    refreshConfig();
     if (!connection.accessToken) throw publicError("Square is not connected.", 409);
     const expiresSoon = connection.tokenExpiresAt && Date.parse(connection.tokenExpiresAt) < Date.now() + 5 * 60 * 1000;
     if (!expiresSoon) return decrypt(connection.accessToken, config.applicationSecret);
@@ -289,11 +300,35 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
       : connection.refreshToken;
     connection.tokenExpiresAt = token.expires_at || "";
     connection.merchantId = token.merchant_id || connection.merchantId || "";
-    connection.environment = environment;
+    connection.environment = config.environment;
   }
 
   function requireConfigured() {
+    refreshConfig();
     if (!configured()) throw publicError("Square environment variables are incomplete.", 503);
+  }
+
+  function refreshConfig() {
+    const latestSquareEnabled = isSquareEnabled(env);
+    const latestRawEnvironment = String(env.SQUARE_ENVIRONMENT || "sandbox").trim().toLowerCase();
+    if (latestSquareEnabled && !["sandbox", "production"].includes(latestRawEnvironment)) {
+      throw publicError(`SQUARE_ENVIRONMENT must be "sandbox" or "production"; received "${env.SQUARE_ENVIRONMENT}".`, 503);
+    }
+    const latestEnvironment = latestRawEnvironment === "production" ? "production" : "sandbox";
+    config.environment = latestEnvironment;
+    config.baseUrl = latestEnvironment === "production"
+      ? "https://connect.squareup.com"
+      : "https://connect.squareupsandbox.com";
+    config.oauthAuthorizeUrl = latestEnvironment === "production"
+      ? "https://connect.squareup.com/oauth2/authorize"
+      : "https://connect.squareupsandbox.com/oauth2/authorize";
+    config.applicationId = env.SQUARE_CLIENT_ID || env.SQUARE_APPLICATION_ID || "";
+    config.applicationSecret = env.SQUARE_APPLICATION_SECRET || "";
+    config.redirectUrl = env.SQUARE_REDIRECT_URI || env.SQUARE_OAUTH_REDIRECT_URL || "";
+    config.signatureKey = env.SQUARE_WEBHOOK_SIGNATURE_KEY || "";
+    config.webhookUrl = env.SQUARE_WEBHOOK_URL || "";
+    config.version = env.SQUARE_VERSION || "2026-05-20";
+    config.squareEnabled = latestSquareEnabled;
   }
 
   return {
@@ -307,6 +342,55 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
   };
 }
 
+function isSquareEnabled(env) {
+  if (String(env.SQUARE_ENABLED || "").toLowerCase() === "false") return false;
+  return [
+    "SQUARE_CLIENT_ID",
+    "SQUARE_APPLICATION_ID",
+    "SQUARE_APPLICATION_SECRET",
+    "SQUARE_REDIRECT_URI",
+    "SQUARE_OAUTH_REDIRECT_URL",
+    "SQUARE_ENVIRONMENT",
+    "SQUARE_WEBHOOK_SIGNATURE_KEY",
+    "SQUARE_WEBHOOK_URL",
+  ].some((key) => Boolean(env[key]));
+}
+
+function validateStartupConfig(env, config, rawEnvironment) {
+  if (!config.squareEnabled) {
+    console.log("[square] Disabled; no Square environment variables detected.");
+    return;
+  }
+  if (!["sandbox", "production"].includes(rawEnvironment)) {
+    throw new Error(`SQUARE_ENVIRONMENT must be "sandbox" or "production"; received "${env.SQUARE_ENVIRONMENT}".`);
+  }
+  if (!config.applicationId) throw new Error("Square is enabled but SQUARE_CLIENT_ID is missing.");
+  if (!config.redirectUrl) throw new Error("Square is enabled but SQUARE_REDIRECT_URI is missing.");
+  if (!config.applicationSecret) throw new Error("Square is enabled but SQUARE_APPLICATION_SECRET is missing.");
+
+  const expectedRedirectUri = expectedRailwayRedirectUri(env);
+  console.log(`[square] Environment: ${config.environment}`);
+  console.log(`[square] OAuth authorize host: ${new URL(config.oauthAuthorizeUrl).host}`);
+  console.log(`[square] Redirect URI: ${config.redirectUrl}`);
+  if (expectedRedirectUri && config.redirectUrl !== expectedRedirectUri) {
+    console.warn(`[square] WARNING: SQUARE_REDIRECT_URI does not match the Railway callback route. Expected ${expectedRedirectUri}`);
+  }
+  try {
+    const redirect = new URL(config.redirectUrl);
+    if (redirect.pathname !== "/api/square/oauth/callback") {
+      console.warn("[square] WARNING: SQUARE_REDIRECT_URI path should be /api/square/oauth/callback.");
+    }
+  } catch {
+    throw new Error(`SQUARE_REDIRECT_URI must be a valid absolute URL; received "${config.redirectUrl}".`);
+  }
+}
+
+function expectedRailwayRedirectUri(env) {
+  const domain = env.RAILWAY_PUBLIC_DOMAIN || env.RAILWAY_STATIC_URL;
+  if (!domain) return "";
+  const origin = String(domain).startsWith("http") ? String(domain).replace(/\/$/, "") : `https://${domain}`;
+  return `${origin}/api/square/oauth/callback`;
+}
 function encrypt(value, secret) {
   if (!value) return "";
   const iv = crypto.randomBytes(12);

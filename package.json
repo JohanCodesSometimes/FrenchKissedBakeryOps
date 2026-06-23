@@ -5,7 +5,8 @@
   "description": "Private BakeryOps AI frontend prototype.",
   "scripts": {
     "start": "node server.js",
-    "test": "node --test"
+    "test": "node --test",
+    "verify:square-oauth": "node scripts/verify-square-oauth.js"
   },
   "engines": {
     "node": ">=20"

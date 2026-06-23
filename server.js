@@ -102,9 +102,14 @@ function startServer() {
         return sendJson(res, 200, squareService.status());
       }
 
+      if (url.pathname === "/api/square/oauth-url" && req.method === "GET") {
+        const destination = await squareService.startOAuth();
+        return sendJson(res, 200, { url: destination }, noStoreHeaders());
+      }
+
       if (url.pathname === "/api/square/connect" && req.method === "GET") {
         const destination = await squareService.startOAuth();
-        res.writeHead(302, { Location: destination });
+        res.writeHead(302, { Location: destination, ...noStoreHeaders() });
         return res.end();
       }
 
@@ -1011,9 +1016,18 @@ function requireLogin(res) {
   res.end("Authentication required");
 }
 
-function sendJson(res, status, body) {
-  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+function sendJson(res, status, body, headers = {}) {
+  res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers });
   res.end(JSON.stringify(body));
+}
+
+function noStoreHeaders() {
+  return {
+    "Cache-Control": "no-store, no-cache, must-revalidate, proxy-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+    "Surrogate-Control": "no-store",
+  };
 }
 
 function readJsonBody(req) {
