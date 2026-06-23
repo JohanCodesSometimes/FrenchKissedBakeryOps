@@ -27,6 +27,11 @@ let receiptItems;
 let receipts;
 let receiptParser;
 const receiptDrafts = new Map();
+const squareDiagnostics = {
+  latestWebhookReceivedAt: "",
+  latestSquarePaymentId: "",
+  latestSaleId: "",
+};
 
 const types = {
   ".html": "text/html; charset=utf-8",
@@ -89,6 +94,8 @@ function startServer() {
 
       if (url.pathname === "/api/square/webhook" && req.method === "POST") {
         console.log("[square] webhook received");
+        console.log("[square-test] webhook received");
+        squareDiagnostics.latestWebhookReceivedAt = new Date().toISOString();
         const rawBody = await readRawBody(req);
         const signature = req.headers["x-square-hmacsha256-signature"];
         if (!squareService.verifyWebhook(rawBody, signature)) {
@@ -98,7 +105,17 @@ function startServer() {
         try { event = JSON.parse(rawBody); }
         catch { return sendJson(res, 400, { error: "Invalid JSON body" }); }
         console.log(`[square] event type: ${event?.type || "unknown"}`);
+        const squarePaymentId = squarePaymentIdFromWebhook(event);
+        if (event?.type === "payment.created") console.log("[square-test] payment created");
+        if (squarePaymentId) squareDiagnostics.latestSquarePaymentId = squarePaymentId;
         const result = await squareService.processWebhook(event);
+        if (result.synced) {
+          const sale = latestSquareSale(squarePaymentId, squareOrderIdFromWebhook(event));
+          if (sale) {
+            squareDiagnostics.latestSaleId = sale.id;
+            console.log("[square-test] sale inserted");
+          }
+        }
         return sendJson(res, 200, result);
       }
 
@@ -106,6 +123,18 @@ function startServer() {
 
       if (url.pathname === "/api/square/status" && req.method === "GET") {
         return sendJson(res, 200, squareService.status());
+      }
+
+      if (url.pathname === "/api/square/diagnostics" && req.method === "GET") {
+        const squareStatus = squareService.status();
+        return sendJson(res, 200, {
+          squareConnected: Boolean(squareStatus.connected),
+          webhookConfigured: squareWebhookConfigured(),
+          latestWebhookReceivedAt: squareDiagnostics.latestWebhookReceivedAt,
+          latestSquarePaymentId: squareDiagnostics.latestSquarePaymentId,
+          latestSaleId: squareDiagnostics.latestSaleId,
+          salesCount: collections.sales.length,
+        });
       }
 
       if (url.pathname === "/api/square/oauth-url" && req.method === "GET") {
@@ -142,6 +171,7 @@ function startServer() {
       }
 
       if (url.pathname === "/api/dashboard" && req.method === "GET") {
+        console.log(`[square-test] dashboard sale count: ${collections.sales.length}`);
         return sendJson(res, 200, buildDashboard());
       }
 
@@ -226,6 +256,26 @@ bootstrap().catch((error) => {
   console.error(`[startup] ${error.message}`);
   process.exitCode = 1;
 });
+
+function squareWebhookConfigured() {
+  return Boolean(process.env.SQUARE_WEBHOOK_SIGNATURE_KEY && process.env.SQUARE_WEBHOOK_URL);
+}
+
+function squarePaymentIdFromWebhook(event) {
+  return event?.data?.id || event?.data?.object?.payment?.id || event?.data?.object?.payment_updated?.payment_id || "";
+}
+
+function squareOrderIdFromWebhook(event) {
+  return event?.data?.object?.payment?.order_id || event?.data?.object?.order?.id ||
+    event?.data?.object?.order_updated?.order_id || event?.data?.object?.order_created?.order_id || "";
+}
+
+function latestSquareSale(paymentId, orderId) {
+  return collections.sales.find((sale) =>
+    (paymentId && sale.squarePaymentId === paymentId) ||
+    (orderId && sale.squareOrderId === orderId),
+  );
+}
 
 async function createRecord(collectionName, req, res) {
   const input = await readJsonBody(req);

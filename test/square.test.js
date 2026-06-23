@@ -358,3 +358,21 @@ test("frontend static assets are not globally served without browser caching", (
   assert.doesNotMatch(server, /"index\.html", "script\.js", "square-connect-fix\.js"/);
   assert.doesNotMatch(server, /"Cache-Control": "no-store, no-cache, must-revalidate"/);
 });
+
+
+test("Square production validation diagnostics are backend-only and token-safe", () => {
+  const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  assert.match(server, /\/api\/square\/diagnostics/);
+  assert.match(server, /\[square-test\] webhook received/);
+  assert.match(server, /\[square-test\] payment created/);
+  assert.match(server, /\[square-test\] sale inserted/);
+  assert.match(server, /\[square-test\] dashboard sale count/);
+  assert.match(server, /squareConnected: Boolean\(squareStatus\.connected\)/);
+  assert.match(server, /webhookConfigured: squareWebhookConfigured\(\)/);
+  assert.match(server, /latestWebhookReceivedAt: squareDiagnostics\.latestWebhookReceivedAt/);
+  assert.match(server, /latestSquarePaymentId: squareDiagnostics\.latestSquarePaymentId/);
+  assert.match(server, /latestSaleId: squareDiagnostics\.latestSaleId/);
+  assert.match(server, /salesCount: collections\.sales\.length/);
+  const diagnosticsBlock = server.slice(server.indexOf('if (url.pathname === "/api/square/diagnostics"'), server.indexOf('if (url.pathname === "/api/square/oauth-url"'));
+  assert.doesNotMatch(diagnosticsBlock, /accessToken|refreshToken|token/i);
+});
