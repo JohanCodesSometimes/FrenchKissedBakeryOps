@@ -984,6 +984,7 @@ function serveStatic(pathname, res) {
     path.join(root, "index.html"),
     path.join(root, "styles.css"),
     path.join(root, "script.js"),
+    path.join(root, "square-connect-fix.js"),
   ]);
   if (!allowedFiles.has(filePath)) {
     res.writeHead(404);
@@ -996,9 +997,19 @@ function serveStatic(pathname, res) {
       res.end("Not found");
       return;
     }
-    res.writeHead(200, { "Content-Type": types[path.extname(filePath)] });
+    res.writeHead(200, { "Content-Type": types[path.extname(filePath)], ...staticNoCacheHeaders(filePath) });
     res.end(body);
   });
+}
+
+function staticNoCacheHeaders(filePath) {
+  const name = path.basename(filePath);
+  if (!["index.html", "script.js", "square-connect-fix.js"].includes(name)) return {};
+  return {
+    "Cache-Control": "no-store, no-cache, must-revalidate",
+    Pragma: "no-cache",
+    Expires: "0",
+  };
 }
 
 function isAuthorized(req) {

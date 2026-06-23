@@ -51,7 +51,6 @@ function bindEvents() {
   document.querySelector("#report-month").addEventListener("change", refreshReport);
   document.querySelector("#refresh-shopping").addEventListener("click", refreshShoppingList);
   document.querySelector("#settings-form").addEventListener("submit", saveSettings);
-  document.querySelector("#square-connect").addEventListener("click", connectSquare);
   document.querySelector("#square-disconnect").addEventListener("click", disconnectSquare);
   document.querySelector("#square-sync").addEventListener("click", syncRecentSquareSales);
   document.querySelector("#receipt-upload-button").addEventListener("click", (event) => {
@@ -378,32 +377,6 @@ async function refreshSquareStatus() {
   }
 }
 
-async function connectSquare() {
-  const button = document.querySelector("#square-connect");
-  const originalText = button.textContent;
-  button.disabled = true;
-  button.textContent = "Connecting...";
-  try {
-    const response = await fetch("/api/square/oauth-url", {
-      method: "GET",
-      cache: "no-store",
-      credentials: "same-origin",
-      headers: { Accept: "application/json" },
-    });
-    const data = await response.json().catch(() => ({}));
-    if (!response.ok || !data.url) throw new Error(data.error || "Could not start Square connection");
-    const oauthUrl = new URL(data.url);
-    if (!["connect.squareupsandbox.com", "connect.squareup.com"].includes(oauthUrl.hostname)) {
-      throw new Error("Square returned an unexpected OAuth host");
-    }
-    console.log("[square] Redirecting to OAuth host:", oauthUrl.hostname);
-    window.location.assign(data.url);
-  } catch (error) {
-    showNotice(error.message, "error");
-    button.textContent = originalText;
-    button.disabled = false;
-  }
-}
 async function syncRecentSquareSales() {
   const button = document.querySelector("#square-sync");
   const originalText = button.textContent;

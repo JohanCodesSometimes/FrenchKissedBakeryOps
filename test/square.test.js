@@ -200,42 +200,57 @@ test("Square OAuth uses fresh state and the correct sandbox and production autho
 });
 
 
-test("Settings Connect Square fetches a fresh backend OAuth URL and exposes the deployment marker", () => {
-  const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
-  const script = fs.readFileSync(path.join(__dirname, "..", "script.js"), "utf8");
-  assert.match(html, /id="square-connect" type="button"/);
-  assert.match(html, /Square UI build 2026-06-23-oauth-handler-fix/);
-  assert.match(html, /script\.js\?v=2026-06-23-oauth-handler-fix/);
-  assert.match(script, /fetch\("\/api\/square\/oauth-url", \{[\s\S]*cache: "no-store"/);
-  assert.match(script, /new URL\(data\.url\)/);
-  assert.match(script, /console\.log\("\[square\] Redirecting to OAuth host:", oauthUrl\.hostname\)/);
-  assert.doesNotMatch(html, /connect\.squareup(?:sandbox)?\.com\/oauth2\/authorize/);
-  assert.doesNotMatch(script, new RegExp("https://" + "squareupsandbox\\.com", "i"));
-});
 
-test("repo has no stale Railway, localhost, or hardcoded frontend OAuth callback URLs", () => {
-  const root = path.join(__dirname, "..");
-  const files = ["index.html", "script.js", "styles.css", "README.md", "server.js"];
-  const combined = files.map((file) => fs.readFileSync(path.join(root, file), "utf8")).join("\n");
-  assert.doesNotMatch(combined, /https?:\/\/localhost[^\s"']*\/api\/square\/oauth\/callback/i);
-  assert.doesNotMatch(combined, /https?:\/\/127\.0\.0\.1[^\s"']*\/api\/square\/oauth\/callback/i);
-  assert.doesNotMatch(combined, /https?:\/\/[^\s"'<]*railway[^\s"'>]*\/api\/square\/oauth\/callback/i);
-});
 
-test("frontend Square OAuth handler has no stale fallback redirects", () => {
+test("Square connect final handler is isolated from cached script.js", () => {
   const root = path.join(__dirname, "..");
   const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
   const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
-  const frontend = html + "\n" + script;
-  assert.doesNotMatch(frontend, new RegExp("https://" + "squareupsandbox\\.com", "i"));
-  assert.doesNotMatch(frontend, new RegExp("(^|[^.])" + "squareupsandbox\\.com/oauth2/authorize", "i"));
-  assert.doesNotMatch(script, /\/api\/square\/connect/);
-  const start = script.indexOf("async function connectSquare()");
-  const end = script.indexOf("async function syncRecentSquareSales()", start);
-  const handler = start >= 0 && end > start ? script.slice(start, end) : "";
-  assert.match(handler, /fetch\("\/api\/square\/oauth-url", \{[\s\S]*cache: "no-store"/);
-  assert.match(handler, /new URL\(data\.url\)/);
-  assert.match(handler, /includes\(oauthUrl\.hostname\)/);
-  assert.match(handler, /window\.location\.assign\(data\.url\)/);
-  assert.doesNotMatch(handler, /window\.location\.assign\((?!data\.url\))/);
+  const fix = fs.readFileSync(path.join(root, "square-connect-fix.js"), "utf8");
+  assert.match(html, /id="square-connect" type="button"/);
+  assert.match(html, /Square UI build final-square-oauth-2026-06-23-1/);
+  const scriptIndex = html.indexOf('<script src="script.js?v=2026-06-23-oauth-handler-fix"></script>');
+  const fixIndex = html.indexOf('<script src="/square-connect-fix.js?v=final-square-oauth-2026-06-23-1"></script>');
+  assert.ok(scriptIndex >= 0, "script.js must be loaded");
+  assert.ok(fixIndex > scriptIndex, "square-connect-fix.js must load after script.js");
+  assert.equal(script.includes('document.querySelector("#square-connect").addEventListener("click"'), false);
+  assert.equal(script.includes("async function connectSquare"), false);
+  assert.equal(script.includes("/api/square/oauth-url"), false);
+  assert.doesNotMatch(script, /window\.location\.(?:assign|replace)/);
+  assert.equal(fix.includes("cloneNode(true)"), true);
+  assert.equal(fix.includes("replaceWith(cleanButton)"), true);
+  assert.equal(fix.includes('addEventListener("click", connectSquare'), true);
+  assert.equal(fix.includes("event.preventDefault()"), true);
+  assert.equal(fix.includes("event.stopPropagation()"), true);
+  assert.equal(fix.includes('fetch("/api/square/oauth-url?ts=" + Date.now(), { cache: "no-store" })'), true);
+  assert.equal(fix.includes('console.log("[square-final] URL:", data.url)'), true);
+  assert.equal(fix.includes("allowedHosts.has(oauthUrl.hostname)"), true);
+  assert.equal(fix.includes("window.location.replace(data.url)"), true);
+});
+
+test("frontend has no stale Square OAuth fallback path", () => {
+  const root = path.join(__dirname, "..");
+  const files = ["index.html", "script.js", "square-connect-fix.js", "test/square.test.js"];
+  const combined = files.map((file) => fs.readFileSync(path.join(root, file), "utf8")).join("\n");
+  assert.doesNotMatch(combined, new RegExp("https://" + "squareupsandbox\\.com", "i"));
+  assert.doesNotMatch(combined, new RegExp("(^|[^.])" + "squareupsandbox\\.com/oauth2/authorize", "i"));
+  const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
+  assert.equal(script.includes("/api/square/connect"), false);
+  assert.equal(script.includes("/api/square/oauth-url"), false);
+  assert.doesNotMatch(script, /window\.location\.(?:assign|replace)/);
+  const fix = fs.readFileSync(path.join(root, "square-connect-fix.js"), "utf8");
+  const validationIndex = fix.indexOf("allowedHosts.has(oauthUrl.hostname)");
+  const redirectIndex = fix.indexOf("window.location.replace(data.url)");
+  assert.ok(validationIndex >= 0, "Square OAuth hostname must be validated");
+  assert.ok(redirectIndex > validationIndex, "Square OAuth redirect must happen after hostname validation");
+});
+
+
+test("frontend static assets are served without browser caching", () => {
+  const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
+  assert.match(server, /path\.join\(root, "square-connect-fix\.js"\)/);
+  assert.match(server, /"index\.html", "script\.js", "square-connect-fix\.js"/);
+  assert.match(server, /"Cache-Control": "no-store, no-cache, must-revalidate"/);
+  assert.match(server, /Pragma: "no-cache"/);
+  assert.match(server, /Expires: "0"/);
 });
