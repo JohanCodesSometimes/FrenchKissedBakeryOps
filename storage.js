@@ -62,6 +62,10 @@ function createLocalStorage(dataDir) {
       ensureJson(path.join(resolvedDir, localFiles.receipts), state.receipts);
       return state;
     },
+    async loadCollection(name) {
+      if (!collectionNames.includes(name)) throw new Error(`Unsupported local collection: ${name}`);
+      return loadArray(path.join(resolvedDir, `${name}.json`));
+    },
     async saveCollection(name, value) {
       writeJsonAtomic(path.join(resolvedDir, `${name}.json`), value);
     },
@@ -130,6 +134,17 @@ function createSupabaseStorage(client) {
         receiptItems: receiptItems.map(fromReceiptItemRow),
         receipts: receipts.map(fromReceiptRow),
       };
+    },
+    async loadCollection(name) {
+      if (name === "recipes") return selectRecipes(client);
+      const config = {
+        expenses: ["expenses", fromExpenseRow],
+        inventory: ["inventory_items", fromInventoryRow],
+        sales: ["sales", fromSaleRow],
+      }[name];
+      if (!config) throw new Error(`Unsupported Supabase collection: ${name}`);
+      const rows = await selectAll(client, config[0]);
+      return rows.map(config[1]);
     },
     async saveCollection(name, value) {
       if (name === "recipes") return syncRecipes(client, value);

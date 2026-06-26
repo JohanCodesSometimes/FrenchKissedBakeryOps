@@ -14,6 +14,7 @@ let priceHistory = [];
 let activityLog = [];
 let receiptsData = [];
 let activeView = "dashboard-view";
+let dashboardRefreshInFlight = false;
 
 const viewConfig = {
   "dashboard-view": { title: "Dashboard", action: "Add Sale", dialog: "sale-dialog" },
@@ -41,6 +42,7 @@ async function initialize() {
   document.querySelector("#report-month").value = localDateKey(new Date()).slice(0, 7);
   bindEvents();
   await refreshAllData();
+  window.setInterval(refreshDashboard, 30_000);
 }
 
 function bindEvents() {
@@ -417,13 +419,17 @@ async function disconnectSquare() {
 }
 
 async function refreshDashboard() {
+  if (dashboardRefreshInFlight || document.hidden) return;
+  dashboardRefreshInFlight = true;
   try {
-    const response = await fetch("/api/dashboard", { credentials: "same-origin" });
+    const response = await fetch("/api/dashboard", { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error("Could not load dashboard data");
     appData = await response.json();
     renderAll();
   } catch (error) {
     showNotice(error.message, "error");
+  } finally {
+    dashboardRefreshInFlight = false;
   }
 }
 
@@ -437,6 +443,14 @@ function renderAll() {
 
 function renderDashboard() {
   const financials = appData.financials;
+  const summary = appData.salesSummary;
+  setText("#summary-today", money.format(summary.todaySales));
+  setText("#summary-week", money.format(summary.weekSales));
+  setText("#summary-month", money.format(summary.monthSales));
+  setText("#summary-average", money.format(summary.averageTicket));
+  setText("#summary-transactions", numberFormat.format(summary.totalTransactions));
+  setText("#sales-refreshed-at", `Updated ${formatDateTime(appData.updatedAt)} · refreshes every 30 seconds`);
+  renderSalesHistory("#dashboard-sales-history", 7, false);
   setText("#revenue-today", money.format(financials.revenueToday));
   setText("#revenue-month", money.format(financials.revenueThisMonth));
   setText("#expenses-month", money.format(financials.expensesThisMonth));
@@ -540,13 +554,15 @@ function renderSales() {
   setText("#sales-daily", money.format(appData.financials.revenueToday));
   setText("#sales-weekly", money.format(appData.financials.revenueThisWeek));
   setText("#sales-monthly", money.format(appData.financials.revenueThisMonth));
+  setText("#sales-average", money.format(appData.salesSummary.averageTicket));
+  setText("#sales-transactions", numberFormat.format(appData.salesSummary.totalTransactions));
   const body = document.querySelector("#sales-body");
   if (!appData.sales.length) {
-    body.innerHTML = tableEmpty(5, "No sales recorded yet", "Add the first sale to begin tracking revenue.");
+    body.innerHTML = tableEmpty(8, "No sales recorded yet", "Completed Square sales and manual entries will appear here.");
   } else {
     body.innerHTML = appData.sales
       .map(
-        (sale) => `<tr><td>${formatDate(sale.date)}</td><td><strong>${escapeHtml(sale.product)}</strong></td><td>${numberFormat.format(sale.quantitySold)}</td><td>${money.format(sale.saleAmount)}</td><td>${rowActions("sales", sale.id)}</td></tr>`,
+        (sale) => `<tr><td>${formatDate(sale.date)}</td><td><strong>${escapeHtml(sale.product)}</strong></td><td>${numberFormat.format(sale.quantitySold)}</td><td>${money.format(sale.saleAmount)}</td><td>${money.format(sale.tax || 0)}</td><td>${money.format(sale.discount || 0)}</td><td>${sourceBadge(sale.source)}</td><td>${rowActions("sales", sale.id)}</td></tr>`,
       )
       .join("");
   }
@@ -559,6 +575,24 @@ function renderSales() {
         )
         .join("")
     : tableEmpty(3, "No sales recorded yet", "Product performance will appear after sales are entered.");
+}
+
+function renderSalesHistory(selector, columns, includeActions) {
+  const body = document.querySelector(selector);
+  if (!appData.sales.length) {
+    body.innerHTML = tableEmpty(columns, "No sales recorded yet", "Completed Square sales and manual entries will appear here.");
+    return;
+  }
+  body.innerHTML = appData.sales.map((sale) => `<tr>
+    <td>${formatDate(sale.date)}</td><td><strong>${escapeHtml(sale.product)}</strong></td>
+    <td>${numberFormat.format(sale.quantitySold)}</td><td>${money.format(sale.saleAmount)}</td>
+    <td>${money.format(sale.tax || 0)}</td><td>${money.format(sale.discount || 0)}</td>
+    <td>${sourceBadge(sale.source)}</td>${includeActions ? `<td>${rowActions("sales", sale.id)}</td>` : ""}
+  </tr>`).join("");
+}
+
+function sourceBadge(source) {
+  return `<span class="source-badge ${escapeHtml(source || "manual")}">${escapeHtml(titleCase(source || "manual"))}</span>`;
 }
 
 function bindCrudForm(formId, collection, successMessage, payloadBuilder = defaultPayload) {

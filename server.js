@@ -5,6 +5,7 @@ const crypto = require("crypto");
 const { createStorage } = require("./storage");
 const { createSquareService } = require("./square");
 const { createReceiptParser } = require("./receipt-parser");
+const { buildSalesSummary } = require("./sales-analytics");
 
 const root = __dirname;
 const port = Number(process.env.PORT || 4173);
@@ -171,8 +172,9 @@ function startServer() {
       }
 
       if (url.pathname === "/api/dashboard" && req.method === "GET") {
+        collections.sales = (await storage.loadCollection("sales")).map((item) => migrateRecord("sales", item));
         console.log(`[square-test] dashboard sale count: ${collections.sales.length}`);
-        return sendJson(res, 200, buildDashboard());
+        return sendJson(res, 200, buildDashboard(), noStoreHeaders());
       }
 
       if (url.pathname === "/api/settings" && req.method === "GET") {
@@ -824,12 +826,7 @@ function buildDashboard() {
   const now = new Date();
   const todayKey = localDateKey(now);
   const monthKey = todayKey.slice(0, 7);
-  const weekStart = new Date(now);
-  weekStart.setHours(0, 0, 0, 0);
-  weekStart.setDate(now.getDate() - now.getDay());
-
-  const todaySales = collections.sales.filter((sale) => sale.date === todayKey);
-  const weekSales = collections.sales.filter((sale) => dateFromKey(sale.date) >= weekStart);
+  const salesSummary = buildSalesSummary(collections.sales, now);
   const monthSales = collections.sales.filter((sale) => sale.date.startsWith(monthKey));
   const monthExpenses = collections.expenses.filter((expense) => expense.date.startsWith(monthKey));
   const monthRevenue = sum(monthSales, "saleAmount");
@@ -840,12 +837,13 @@ function buildDashboard() {
 
   return {
     financials: {
-      revenueToday: sum(todaySales, "saleAmount"),
-      revenueThisWeek: sum(weekSales, "saleAmount"),
-      revenueThisMonth: monthRevenue,
+      revenueToday: salesSummary.todaySales,
+      revenueThisWeek: salesSummary.weekSales,
+      revenueThisMonth: salesSummary.monthSales,
       expensesThisMonth: monthExpenseTotal,
       estimatedProfit: round(monthRevenue - monthExpenseTotal),
     },
+    salesSummary,
     counts: {
       expenses: collections.expenses.length,
       sales: collections.sales.length,

@@ -328,6 +328,50 @@ select {
   margin-bottom: 16px;
 }
 
+.sales-summary-panel {
+  margin-bottom: 18px;
+}
+
+.sales-summary-grid {
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin-bottom: 0;
+}
+
+.summary-metric {
+  padding: 4px 16px;
+  border-left: 1px solid var(--line);
+}
+
+.summary-metric:first-child {
+  border-left: 0;
+  padding-left: 0;
+}
+
+.summary-metric span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.78rem;
+  margin-bottom: 8px;
+}
+
+.summary-metric strong {
+  font-size: 1.35rem;
+}
+
+.source-badge {
+  display: inline-block;
+  border-radius: 999px;
+  padding: 4px 9px;
+  background: var(--surface-2);
+  font-size: 0.75rem;
+  font-weight: 700;
+}
+
+.source-badge.square {
+  color: #1b6e4b;
+  background: #e5f6ee;
+}
+
 .dashboard-metrics {
   grid-template-columns: repeat(5, minmax(0, 1fr));
 }
@@ -1270,6 +1314,14 @@ dialog::backdrop {
 }
 
 @media (max-width: 1100px) {
+  .sales-summary-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .summary-metric {
+    border-left: 0;
+    padding: 8px 0;
+  }
   .app-shell {
     grid-template-columns: 1fr;
   }

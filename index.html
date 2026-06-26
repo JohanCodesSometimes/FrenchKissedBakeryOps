@@ -40,6 +40,20 @@
         <div class="notice" id="app-notice" role="status" hidden></div>
 
         <section class="page-view active" id="dashboard-view">
+          <article class="panel sales-summary-panel">
+            <div class="panel-header"><div><p class="eyebrow">Live sales</p><h2>Sales Summary</h2></div><small id="sales-refreshed-at">Refreshing every 30 seconds</small></div>
+            <div class="metrics-grid sales-summary-grid">
+              <div class="summary-metric"><span>Today's sales</span><strong id="summary-today">$0.00</strong></div>
+              <div class="summary-metric"><span>This week's sales</span><strong id="summary-week">$0.00</strong></div>
+              <div class="summary-metric"><span>This month's sales</span><strong id="summary-month">$0.00</strong></div>
+              <div class="summary-metric"><span>Average ticket</span><strong id="summary-average">$0.00</strong></div>
+              <div class="summary-metric"><span>Total transactions</span><strong id="summary-transactions">0</strong></div>
+            </div>
+          </article>
+          <article class="panel section-gap">
+            <div class="panel-header"><div><p class="eyebrow">Live sales</p><h2>Sales History</h2></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Product</th><th>Quantity</th><th>Revenue</th><th>Tax</th><th>Discount</th><th>Source</th></tr></thead><tbody id="dashboard-sales-history"><tr><td colspan="7"><div class="empty-state table-empty"><strong>No sales recorded yet</strong><p>Completed Square sales and manual entries will appear here.</p></div></td></tr></tbody></table></div>
+          </article>
           <div class="metrics-grid dashboard-metrics">
             <article class="metric-card"><span>Revenue Today</span><strong id="revenue-today">$0.00</strong><small>Recorded sales</small></article>
             <article class="metric-card"><span>Revenue This Month</span><strong id="revenue-month">$0.00</strong><small>Recorded sales</small></article>
@@ -130,11 +144,13 @@
             <article class="metric-card"><span>Daily Revenue</span><strong id="sales-daily">$0.00</strong></article>
             <article class="metric-card"><span>Weekly Revenue</span><strong id="sales-weekly">$0.00</strong></article>
             <article class="metric-card"><span>Monthly Revenue</span><strong id="sales-monthly">$0.00</strong></article>
+            <article class="metric-card"><span>Average Ticket</span><strong id="sales-average">$0.00</strong></article>
+            <article class="metric-card"><span>Total Transactions</span><strong id="sales-transactions">0</strong></article>
           </div>
           <div class="section-toolbar"><div></div><div class="panel-actions"><input id="sales-import" type="file" accept=".csv,text/csv" hidden /><button class="ghost-button" type="button" data-import-type="sales">Import CSV</button><a class="ghost-button link-button" href="/api/export/sales.csv">Export CSV</a><button class="primary-button" type="button" data-open-dialog="sale-dialog">Add Sale</button></div></div>
           <article class="panel">
             <div class="panel-header"><div><p class="eyebrow">Sales tracking</p><h2>Sales table</h2></div></div>
-            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Product</th><th>Quantity</th><th>Sale Amount</th><th>Actions</th></tr></thead><tbody id="sales-body"><tr><td colspan="5"><div class="empty-state table-empty"><strong>No sales recorded yet</strong><p>Add the first sale to begin tracking revenue.</p></div></td></tr></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Product</th><th>Quantity</th><th>Revenue</th><th>Tax</th><th>Discount</th><th>Source</th><th>Actions</th></tr></thead><tbody id="sales-body"><tr><td colspan="8"><div class="empty-state table-empty"><strong>No sales recorded yet</strong><p>Completed Square sales and manual entries will appear here.</p></div></td></tr></tbody></table></div>
           </article>
           <article class="panel section-gap">
             <div class="panel-header"><div><p class="eyebrow">Product performance</p><h2>Products by revenue</h2></div></div>
