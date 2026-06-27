@@ -308,10 +308,10 @@ function fromExpenseRow(row) {
   return { ...fromMetadata(row), date: row.date, vendor: row.vendor, category: row.category, amount: Number(row.amount), notes: row.notes || "" };
 }
 function toInventoryRow(item) {
-  return { ...toMetadata(item), ingredient_name: item.ingredientName, quantity: item.quantity, unit: item.unit, minimum_threshold: item.minimumThreshold, supplier: item.supplier || "", cost_per_unit: item.costPerUnit };
+  return { ...toMetadata(item), ingredient_name: item.ingredientName, category: item.category || "Ingredients", quantity: item.quantity, unit: item.unit, minimum_threshold: item.minimumThreshold, supplier: item.supplier || "", cost_per_unit: item.costPerUnit };
 }
 function fromInventoryRow(row) {
-  return { ...fromMetadata(row), ingredientName: row.ingredient_name, quantity: Number(row.quantity), unit: row.unit, minimumThreshold: Number(row.minimum_threshold), supplier: row.supplier || "", costPerUnit: Number(row.cost_per_unit) };
+  return { ...fromMetadata(row), ingredientName: row.ingredient_name, category: row.category || "Ingredients", quantity: Number(row.quantity), unit: row.unit, minimumThreshold: Number(row.minimum_threshold), supplier: row.supplier || "", costPerUnit: Number(row.cost_per_unit) };
 }
 function toRecipeRow(item) {
   return { ...toMetadata(item), recipe_name: item.recipeName, category: item.category, yield_quantity: item.yieldQuantity, yield_unit: item.yieldUnit, selling_price: item.sellingPrice, preparation_notes: item.preparationNotes || "" };

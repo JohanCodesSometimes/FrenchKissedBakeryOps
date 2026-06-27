@@ -14,6 +14,7 @@ create table if not exists public.expenses (
 create table if not exists public.inventory_items (
   id uuid primary key default gen_random_uuid(),
   ingredient_name text not null,
+  category text not null default 'Ingredients' check (category in ('Ingredients','Packaging','Equipment','Utilities','Other')),
   quantity numeric(14,4) not null check (quantity >= 0),
   unit text not null check (unit in ('lb','oz','g','kg','count','dozen','gallon')),
   minimum_threshold numeric(14,4) not null check (minimum_threshold >= 0),
@@ -158,6 +159,8 @@ create table if not exists public.receipt_items (
   is_deposit boolean not null default false,
   created_at timestamptz not null default now()
 );
+
+alter table public.inventory_items add column if not exists category text not null default 'Ingredients';
 
 alter table public.receipt_items
   add column if not exists receipt_id uuid references public.receipts(id) on delete cascade,

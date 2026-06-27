@@ -689,6 +689,18 @@ th {
   color: var(--accent-strong);
 }
 
+.danger-pill {
+  background: rgba(179, 57, 57, 0.14);
+  color: var(--danger);
+}
+
+.inventory-summary-grid .metric-card small {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .cost-stack {
   display: grid;
 }

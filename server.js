@@ -6,6 +6,7 @@ const { createStorage } = require("./storage");
 const { createSquareService } = require("./square");
 const { createReceiptParser } = require("./receipt-parser");
 const { buildSalesSummary } = require("./sales-analytics");
+const { applyReceiptItemsToInventory, buildInventoryIntelligence } = require("./inventory-analytics");
 
 const root = __dirname;
 const port = Number(process.env.PORT || 4173);
@@ -172,7 +173,12 @@ function startServer() {
       }
 
       if (url.pathname === "/api/dashboard" && req.method === "GET") {
-        collections.sales = (await storage.loadCollection("sales")).map((item) => migrateRecord("sales", item));
+        const [liveSales, liveInventory] = await Promise.all([
+          storage.loadCollection("sales"),
+          storage.loadCollection("inventory"),
+        ]);
+        collections.sales = liveSales.map((item) => migrateRecord("sales", item));
+        collections.inventory = liveInventory.map((item) => migrateRecord("inventory", item));
         console.log(`[square-test] dashboard sale count: ${collections.sales.length}`);
         return sendJson(res, 200, buildDashboard(), noStoreHeaders());
       }
@@ -221,7 +227,11 @@ function startServer() {
 
       const collectionMatch = url.pathname.match(/^\/api\/(expenses|sales|inventory|recipes)$/);
       if (collectionMatch && req.method === "GET") {
-        return sendJson(res, 200, collections[collectionMatch[1]]);
+        const collectionName = collectionMatch[1];
+        if (collectionName === "inventory") {
+          collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
+        }
+        return sendJson(res, 200, collections[collectionName]);
       }
       if (collectionMatch && req.method === "POST") {
         return createRecord(collectionMatch[1], req, res);
@@ -281,6 +291,9 @@ function latestSquareSale(paymentId, orderId) {
 
 async function createRecord(collectionName, req, res) {
   const input = await readJsonBody(req);
+  if (collectionName === "inventory") {
+    collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
+  }
   const record = normalizeRecord(collectionName, input, {
     id: crypto.randomUUID(),
     createdAt: new Date().toISOString(),
@@ -368,6 +381,7 @@ async function approveReceipt(req, res) {
     notes: `Receipt upload. Subtotal: $${reviewed.subtotal.toFixed(2)}; tax: $${reviewed.tax.toFixed(2)}.`,
     createdAt: now,
   };
+  collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
   const snapshot = {
     expenses: structuredClone(collections.expenses),
     inventory: structuredClone(collections.inventory),
@@ -377,31 +391,13 @@ async function approveReceipt(req, res) {
   };
 
   collections.expenses.unshift(expense);
-  const createdItems = reviewed.items.map((item) => {
-    let inventoryItemId = "";
-    if (item.updateInventory) {
-      let inventoryItem = collections.inventory.find(
-        (record) => normalizeName(record.ingredientName) === normalizeName(item.itemName) && record.unit === item.unit,
-      );
-      if (inventoryItem) {
-        inventoryItem.quantity = round(inventoryItem.quantity + item.quantity);
-        inventoryItem.costPerUnit = item.unitPrice;
-        inventoryItem.supplier = reviewed.storeName;
-        inventoryItem.updatedAt = now;
-      } else {
-        inventoryItem = {
-          id: crypto.randomUUID(),
-          ingredientName: item.itemName,
-          quantity: item.quantity,
-          unit: item.unit,
-          minimumThreshold: 0,
-          supplier: reviewed.storeName,
-          costPerUnit: item.unitPrice,
-          createdAt: now,
-        };
-        collections.inventory.unshift(inventoryItem);
-      }
-      inventoryItemId = inventoryItem.id;
+  const inventoryResults = applyReceiptItemsToInventory(collections.inventory, reviewed.items, {
+    storeName: reviewed.storeName,
+    now,
+    createId: () => crypto.randomUUID(),
+  });
+  const createdItems = inventoryResults.map(({ item, inventoryItem }) => {
+    if (inventoryItem) {
       priceHistory.unshift({
         id: crypto.randomUUID(),
         inventoryId: inventoryItem.id,
@@ -417,7 +413,7 @@ async function approveReceipt(req, res) {
       id: crypto.randomUUID(),
       expenseId,
       receiptId: draft.receiptId,
-      inventoryItemId,
+      inventoryItemId: inventoryItem?.id || "",
       storeName: reviewed.storeName,
       receiptDate: reviewed.receiptDate,
       ...item,
@@ -508,9 +504,6 @@ function receiptExpenseCategory(items) {
   return [...counts.entries()].sort((a, b) => b[1] - a[1])[0]?.[0] || "Other";
 }
 
-function normalizeName(value) {
-  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
 
 function purgeReceiptDrafts() {
   const now = Date.now();
@@ -518,6 +511,9 @@ function purgeReceiptDrafts() {
 }
 
 async function updateRecord(collectionName, id, req, res) {
+  if (collectionName === "inventory") {
+    collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
+  }
   const index = collections[collectionName].findIndex((record) => record.id === id);
   if (index === -1) return sendJson(res, 404, { error: "Record not found" });
 
@@ -541,6 +537,9 @@ async function updateRecord(collectionName, id, req, res) {
 }
 
 async function deleteRecord(collectionName, id, res) {
+  if (collectionName === "inventory") {
+    collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
+  }
   const index = collections[collectionName].findIndex((record) => record.id === id);
   if (index === -1) return sendJson(res, 404, { error: "Record not found" });
   const [deleted] = collections[collectionName].splice(index, 1);
@@ -610,6 +609,11 @@ function normalizeRecord(collectionName, input, metadata) {
     return {
       ...metadata,
       ingredientName: requiredText(input.ingredientName ?? input.name, "Ingredient name"),
+      category: allowedValue(
+        input.category || "Ingredients",
+        ["Ingredients", "Packaging", "Equipment", "Utilities", "Other"],
+        "Inventory category",
+      ),
       quantity: requiredNonNegativeNumber(input.quantity ?? input.currentQuantity, "Quantity"),
       unit: allowedValue(
         input.unit,
@@ -831,9 +835,8 @@ function buildDashboard() {
   const monthExpenses = collections.expenses.filter((expense) => expense.date.startsWith(monthKey));
   const monthRevenue = sum(monthSales, "saleAmount");
   const monthExpenseTotal = sum(monthExpenses, "amount");
-  const lowStock = collections.inventory.filter(
-    (item) => item.quantity <= item.minimumThreshold,
-  );
+  const inventory = buildInventoryIntelligence(collections.inventory);
+
 
   return {
     financials: {
@@ -852,7 +855,7 @@ function buildDashboard() {
     },
     expenses: collections.expenses,
     sales: collections.sales,
-    inventory: { alerts: lowStock.length, lowStock, all: collections.inventory },
+    inventory: { ...inventory, alerts: inventory.summary.lowStockCount },
     recipes: collections.recipes.map((recipe) => enrichRecipe(recipe)),
     productPerformance: buildProductPerformance(),
     updatedAt: new Date().toISOString(),
@@ -985,6 +988,7 @@ function migrateRecord(name, record) {
     return {
       ...record,
       ingredientName: record.ingredientName ?? record.name ?? "",
+      category: record.category || "Ingredients",
       quantity: Number(record.quantity ?? record.currentQuantity ?? 0),
       costPerUnit: Number(record.costPerUnit ?? 0),
     };

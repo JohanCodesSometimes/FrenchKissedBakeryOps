@@ -449,7 +449,7 @@ function renderDashboard() {
   setText("#summary-month", money.format(summary.monthSales));
   setText("#summary-average", money.format(summary.averageTicket));
   setText("#summary-transactions", numberFormat.format(summary.totalTransactions));
-  setText("#sales-refreshed-at", `Updated ${formatDateTime(appData.updatedAt)} · refreshes every 30 seconds`);
+  setText("#sales-refreshed-at", `Updated ${formatDateTime(appData.updatedAt)} - refreshes every 30 seconds`);
   renderSalesHistory("#dashboard-sales-history", 7, false);
   setText("#revenue-today", money.format(financials.revenueToday));
   setText("#revenue-month", money.format(financials.revenueThisMonth));
@@ -511,18 +511,54 @@ function renderExpenses() {
 }
 
 function renderInventory() {
-  setText("#inventory-alert-total", appData.inventory.alerts);
+  const inventory = appData.inventory;
+  setText("#inventory-total-items", numberFormat.format(inventory.summary.totalTrackedItems));
+  setText("#inventory-alert-total", numberFormat.format(inventory.summary.lowStockCount));
+  setText("#inventory-total-value", money.format(inventory.summary.estimatedInventoryValue));
+  setText("#inventory-recent-count", numberFormat.format(inventory.summary.recentlyUpdatedCount));
+  setText(
+    "#inventory-recent-items",
+    inventory.recentlyUpdatedItems.length
+      ? inventory.recentlyUpdatedItems.slice(0, 3).map((item) => item.ingredientName).join(", ")
+      : "No updates yet",
+  );
+
+  const alertsBody = document.querySelector("#inventory-alerts-body");
+  if (!inventory.all.length) {
+    alertsBody.innerHTML = tableEmpty(4, "No inventory items added yet", "Add inventory to begin monitoring stock levels.");
+  } else if (!inventory.lowStock.length) {
+    alertsBody.innerHTML = tableEmpty(4, "Everything is stocked", "No items are at or below their minimum threshold.");
+  } else {
+    alertsBody.innerHTML = inventory.lowStock.map((item) => `<tr>
+      <td><strong>${escapeHtml(item.ingredientName)}</strong></td>
+      <td>${numberFormat.format(item.quantity)} ${escapeHtml(item.unit)}</td>
+      <td>${numberFormat.format(item.minimumThreshold)} ${escapeHtml(item.unit)}</td>
+      <td>${inventoryStatusBadge(item.status)}</td>
+    </tr>`).join("");
+  }
+
   const body = document.querySelector("#inventory-body");
-  if (!appData.inventory.all.length) {
-    body.innerHTML = tableEmpty(7, "No inventory items added yet", "Add the first ingredient to begin tracking stock.");
+  if (!inventory.all.length) {
+    body.innerHTML = tableEmpty(10, "No inventory items added yet", "Add the first item or approve receipt items to begin tracking stock.");
     return;
   }
-  body.innerHTML = appData.inventory.all
-    .map((item) => {
-      const low = item.quantity <= item.minimumThreshold;
-      return `<tr><td><strong>${escapeHtml(item.ingredientName)}</strong></td><td>${numberFormat.format(item.quantity)} ${item.unit}</td><td>${numberFormat.format(item.minimumThreshold)} ${item.unit}</td><td>${escapeHtml(item.supplier || "Not set")}</td><td>${money.format(item.costPerUnit)} / ${item.unit}</td><td><span class="pill ${low ? "warning-pill" : "good-pill"}">${low ? "Low stock" : "Healthy"}</span></td><td>${rowActions("inventory", item.id)}</td></tr>`;
-    })
-    .join("");
+  body.innerHTML = inventory.all.map((item) => `<tr>
+    <td><strong>${escapeHtml(item.ingredientName)}</strong></td>
+    <td>${escapeHtml(item.category)}</td>
+    <td>${numberFormat.format(item.quantity)}</td>
+    <td>${escapeHtml(item.unit)}</td>
+    <td>${numberFormat.format(item.minimumThreshold)}</td>
+    <td>${money.format(item.costPerUnit)}</td>
+    <td>${money.format(item.estimatedTotalValue)}</td>
+    <td>${item.lastUpdated ? formatDateTime(item.lastUpdated) : "Not available"}</td>
+    <td>${inventoryStatusBadge(item.status)}</td>
+    <td>${rowActions("inventory", item.id)}</td>
+  </tr>`).join("");
+}
+
+function inventoryStatusBadge(status) {
+  const className = status === "Out of Stock" ? "danger-pill" : status === "Low Stock" ? "warning-pill" : "good-pill";
+  return `<span class="pill ${className}">${escapeHtml(status)}</span>`;
 }
 
 function renderRecipes() {
