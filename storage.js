@@ -66,6 +66,12 @@ function createLocalStorage(dataDir) {
       if (!collectionNames.includes(name)) throw new Error(`Unsupported local collection: ${name}`);
       return loadArray(path.join(resolvedDir, `${name}.json`));
     },
+    async loadPriceHistory() {
+      return loadArray(path.join(resolvedDir, localFiles.priceHistory));
+    },
+    async loadReceiptItems() {
+      return loadArray(path.join(resolvedDir, localFiles.receiptItems));
+    },
     async saveCollection(name, value) {
       writeJsonAtomic(path.join(resolvedDir, `${name}.json`), value);
     },
@@ -145,6 +151,13 @@ function createSupabaseStorage(client) {
       if (!config) throw new Error(`Unsupported Supabase collection: ${name}`);
       const rows = await selectAll(client, config[0]);
       return rows.map(config[1]);
+    },
+    async loadPriceHistory() {
+      const rows = await selectAll(client, "supplier_prices", "recorded_at", false);
+      return rows.filter((row) => row.source === "inventory_history").map(fromSupplierPriceRow);
+    },
+    async loadReceiptItems() {
+      return (await selectReceiptItems(client)).map(fromReceiptItemRow);
     },
     async saveCollection(name, value) {
       if (name === "recipes") return syncRecipes(client, value);

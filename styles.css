@@ -380,6 +380,20 @@ select {
   grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
+.purchasing-forecast-grid,
+.purchasing-trend-grid {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.purchasing-trend-grid .metric-card strong {
+  overflow-wrap: anywhere;
+  font-size: 1.2rem;
+}
+
+.purchasing-forecast-grid .metric-card:last-child strong {
+  font-size: 1.35rem;
+}
+
 .metric-card {
   padding: 16px;
 }
@@ -637,8 +651,10 @@ table {
   white-space: nowrap;
 }
 
-.row-actions {
+.row-actions,
+.table-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 6px;
 }
 
@@ -1097,6 +1113,20 @@ dialog::backdrop {
 
 .remove-ingredient {
   color: var(--danger);
+}
+
+.recipe-calculator-panel {
+  border-left: 4px solid var(--accent);
+}
+
+.calculator-note {
+  margin: 14px 0 0;
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.suggested-prices strong {
+  color: var(--accent-strong);
 }
 
 .recipe-summary {

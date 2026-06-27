@@ -21,10 +21,10 @@ const viewConfig = {
   "expenses-view": { title: "Expenses", action: "Add Expense", dialog: "expense-dialog" },
   "receipts-view": { title: "Receipts" },
   "inventory-view": { title: "Inventory", action: "Add Item", dialog: "inventory-dialog" },
-  "recipes-view": { title: "Recipe Library", action: "Create Recipe", dialog: "recipe-dialog" },
+  "recipes-view": { title: "Recipe Costing", action: "Create Recipe", dialog: "recipe-dialog" },
   "sales-view": { title: "Sales", action: "Add Sale", dialog: "sale-dialog" },
   "reports-view": { title: "Monthly Reports" },
-  "shopping-view": { title: "Shopping List" },
+  "shopping-view": { title: "Purchasing Intelligence" },
   "activity-view": { title: "Activity Log" },
   "settings-view": { title: "Owner Settings" },
 };
@@ -562,7 +562,7 @@ function inventoryStatusBadge(status) {
 }
 
 function renderRecipes() {
-  const grid = document.querySelector("#recipe-grid");
+  const body = document.querySelector("#recipe-profitability-body");
   if (!appData) return;
   const query = document.querySelector("#recipe-search").value.trim().toLowerCase();
   const recipes = appData.recipes.filter(
@@ -572,18 +572,31 @@ function renderRecipes() {
       recipe.category.toLowerCase().includes(query),
   );
   if (!recipes.length) {
-    const title = appData.recipes.length ? "No matching recipes" : "No recipes created yet";
-    grid.innerHTML = `<article class="panel empty-state"><strong>${title}</strong><p>${appData.recipes.length ? "Try another search." : "Create the first recipe to calculate food cost and margin."}</p></article>`;
+    body.innerHTML = tableEmpty(
+      7,
+      appData.recipes.length ? "No matching recipes" : "No recipes created yet",
+      appData.recipes.length ? "Try another search." : "Create the first recipe to calculate food cost and profit.",
+    );
     return;
   }
-  grid.innerHTML = recipes
-    .map((recipe) => {
-      const costing = recipe.allCostsAvailable
-        ? `<strong>${money.format(recipe.costPerUnit)}</strong><span>cost per ${escapeHtml(recipe.yieldUnit)}</span>`
-        : `<strong>Cost incomplete</strong><span>Add matching inventory costs</span>`;
-      return `<article class="recipe-card"><div><span class="category-label">${escapeHtml(recipe.category)}</span><h2>${escapeHtml(recipe.recipeName)}</h2><p>Yields ${numberFormat.format(recipe.yieldQuantity)} ${escapeHtml(recipe.yieldUnit)}</p></div><div class="recipe-metric">${costing}</div><div class="card-actions four-actions"><button class="secondary-button" type="button" data-view-recipe="${recipe.id}">View</button><button class="ghost-button" type="button" data-edit-type="recipes" data-record-id="${recipe.id}">Edit</button><button class="ghost-button" type="button" data-duplicate-recipe="${recipe.id}">Duplicate</button><button class="delete-button" type="button" data-delete-type="recipes" data-record-id="${recipe.id}">Delete</button></div></article>`;
-    })
-    .join("");
+  body.innerHTML = recipes.map((recipe) => {
+    const available = recipe.allCostsAvailable;
+    const margin = available ? `${numberFormat.format(recipe.profitMargin)}%` : "Incomplete";
+    return `<tr>
+      <td><strong>${escapeHtml(recipe.recipeName)}</strong><span class="table-subtext">${escapeHtml(recipe.category)}</span></td>
+      <td>${available ? money.format(recipe.costPerUnit) : "Incomplete"}</td>
+      <td>${money.format(recipe.sellingPrice)}</td>
+      <td>${available ? money.format(recipe.profitPerUnit) : "Incomplete"}</td>
+      <td>${margin}</td>
+      <td>${recipe.lastUpdated ? formatDateTime(recipe.lastUpdated) : "Not available"}</td>
+      <td><div class="table-actions">
+        <button class="table-action" type="button" data-view-recipe="${recipe.id}">View</button>
+        <button class="table-action" type="button" data-edit-type="recipes" data-record-id="${recipe.id}">Edit</button>
+        <button class="table-action" type="button" data-duplicate-recipe="${recipe.id}">Copy</button>
+        <button class="table-action danger" type="button" data-delete-type="recipes" data-record-id="${recipe.id}">Delete</button>
+      </div></td>
+    </tr>`;
+  }).join("");
 }
 
 function renderSales() {
@@ -733,12 +746,19 @@ function fillForm(form, record) {
 
 function addIngredientRow(ingredient = null) {
   const editor = document.querySelector("#ingredient-editor");
+  const currentName = ingredient?.ingredientName || "";
+  const hasCurrent = appData.inventory.all.some(
+    (item) => item.ingredientName.toLowerCase() === currentName.toLowerCase(),
+  );
+  const currentOption = currentName && !hasCurrent
+    ? `<option value="${escapeHtml(currentName)}" selected>${escapeHtml(currentName)} (cost unavailable)</option>`
+    : "";
   const inventoryOptions = appData.inventory.all
-    .map((item) => `<option value="${escapeHtml(item.ingredientName)}"></option>`)
+    .map((item) => `<option value="${escapeHtml(item.ingredientName)}"${item.ingredientName.toLowerCase() === currentName.toLowerCase() ? " selected" : ""}>${escapeHtml(item.ingredientName)} - ${money.format(item.costPerUnit)} / ${escapeHtml(item.unit)}</option>`)
     .join("");
   const row = document.createElement("div");
   row.className = "ingredient-row";
-  row.innerHTML = `<label>Ingredient<input name="ingredientName" list="inventory-${editor.children.length}" value="${escapeHtml(ingredient?.ingredientName || "")}" required /><datalist id="inventory-${editor.children.length}">${inventoryOptions}</datalist></label><label>Quantity<input name="ingredientQuantity" type="number" min="0.0001" step="0.0001" value="${ingredient?.quantity ?? ""}" required /></label><label>Unit<select name="ingredientUnit" required><option value="">Unit</option>${unitOptions.map((unit) => `<option${ingredient?.unit === unit ? " selected" : ""}>${unit}</option>`).join("")}</select></label><button class="icon-button remove-ingredient" type="button" data-remove-ingredient aria-label="Remove ingredient">&times;</button>`;
+  row.innerHTML = `<label>Inventory Ingredient<select name="ingredientName" required><option value="">Select ingredient</option>${currentOption}${inventoryOptions}</select></label><label>Quantity Used<input name="ingredientQuantity" type="number" min="0.0001" step="0.0001" value="${ingredient?.quantity ?? ""}" required /></label><label>Unit Used<select name="ingredientUnit" required><option value="">Unit</option>${unitOptions.map((unit) => `<option${ingredient?.unit === unit ? " selected" : ""}>${unit}</option>`).join("")}</select></label><button class="icon-button remove-ingredient" type="button" data-remove-ingredient aria-label="Remove ingredient">&times;</button>`;
   const nameInput = row.querySelector('[name="ingredientName"]');
   nameInput.addEventListener("change", () => {
     const match = appData.inventory.all.find(
@@ -759,11 +779,14 @@ function viewRecipe(id) {
   setText("#recipe-detail-title", recipe.recipeName);
   const breakdown = recipe.costBreakdown
     .map(
-      (item) => `<tr><td>${escapeHtml(item.ingredientName)}</td><td>${numberFormat.format(item.quantity)} ${item.unit}</td><td>${item.costAvailable ? money.format(item.cost) : "Cost unavailable"}</td></tr>`,
+      (item) => `<tr><td>${escapeHtml(item.ingredientName)}</td><td>${numberFormat.format(item.quantity)} ${escapeHtml(item.unit)}</td><td>${item.costAvailable ? money.format(item.cost) : "Cost unavailable"}</td></tr>`,
     )
     .join("");
   const costValue = recipe.allCostsAvailable ? money.format(recipe.totalRecipeCost) : "Incomplete";
-  document.querySelector("#recipe-detail-content").innerHTML = `<div class="recipe-summary"><div><span>Yield</span><strong>${numberFormat.format(recipe.yieldQuantity)} ${escapeHtml(recipe.yieldUnit)}</strong></div><div><span>Selling Price</span><strong>${money.format(recipe.sellingPrice)}</strong></div><div><span>Total Recipe Cost</span><strong>${costValue}</strong></div><div><span>Cost Per Unit</span><strong>${recipe.allCostsAvailable ? money.format(recipe.costPerUnit) : "Incomplete"}</strong></div><div><span>Profit Per Unit</span><strong>${recipe.allCostsAvailable ? money.format(recipe.profitPerUnit) : "Incomplete"}</strong></div><div><span>Profit Margin</span><strong>${recipe.allCostsAvailable ? `${recipe.profitMargin}%` : "Incomplete"}</strong></div></div><h3>Cost breakdown</h3><div class="table-wrap"><table><thead><tr><th>Ingredient</th><th>Quantity</th><th>Cost</th></tr></thead><tbody>${breakdown}</tbody></table></div>${recipe.preparationNotes ? `<div class="notes-block"><h3>Preparation notes</h3><p>${escapeHtml(recipe.preparationNotes)}</p></div>` : ""}`;
+  const suggestions = recipe.suggestedPrices
+    ? `<h3>Suggested Prices</h3><div class="recipe-summary suggested-prices"><div><span>50% Margin</span><strong>${money.format(recipe.suggestedPrices.margin50)}</strong></div><div><span>60% Margin</span><strong>${money.format(recipe.suggestedPrices.margin60)}</strong></div><div><span>70% Margin</span><strong>${money.format(recipe.suggestedPrices.margin70)}</strong></div></div>`
+    : "";
+  document.querySelector("#recipe-detail-content").innerHTML = `<div class="recipe-summary"><div><span>Batch Yield</span><strong>${numberFormat.format(recipe.yieldQuantity)} ${escapeHtml(recipe.yieldUnit)}</strong></div><div><span>Selling Price</span><strong>${money.format(recipe.sellingPrice)}</strong></div><div><span>Total Recipe Cost</span><strong>${costValue}</strong></div><div><span>Cost Per Item</span><strong>${recipe.allCostsAvailable ? money.format(recipe.costPerUnit) : "Incomplete"}</strong></div><div><span>Gross Profit Per Item</span><strong>${recipe.allCostsAvailable ? money.format(recipe.profitPerUnit) : "Incomplete"}</strong></div><div><span>Profit Margin</span><strong>${recipe.allCostsAvailable ? `${recipe.profitMargin}%` : "Incomplete"}</strong></div></div>${suggestions}<h3>Ingredient Cost Breakdown</h3><div class="table-wrap"><table><thead><tr><th>Ingredient</th><th>Quantity Used</th><th>Cost</th></tr></thead><tbody>${breakdown}</tbody></table></div>${recipe.preparationNotes ? `<div class="notes-block"><h3>Preparation notes</h3><p>${escapeHtml(recipe.preparationNotes)}</p></div>` : ""}`;
   document.querySelector("#recipe-detail-dialog").showModal();
 }
 
@@ -921,21 +944,67 @@ async function refreshReport() {
 
 async function refreshShoppingList() {
   try {
-    const response = await fetch("/api/shopping-list");
-    if (!response.ok) throw new Error("Could not load shopping list");
-    const list = await response.json();
-    setText("#shopping-total", money.format(list.estimatedTotal));
-    const body = document.querySelector("#shopping-body");
-    body.innerHTML = list.items.length
-      ? list.items
-          .map(
-            (item) => `<tr><td><strong>${escapeHtml(item.ingredientName)}</strong></td><td>${numberFormat.format(item.currentQuantity)} ${item.unit}</td><td>${numberFormat.format(item.quantityToBuy)} ${item.unit}</td><td>${numberFormat.format(item.targetQuantity)} ${item.unit}</td><td>${escapeHtml(item.supplier || "Not set")}</td><td>${money.format(item.estimatedCost)}</td></tr>`,
-          )
-          .join("")
-      : tableEmpty(6, "No shopping items needed", "Items appear when inventory reaches its minimum threshold.");
+    const response = await fetch("/api/purchasing-intelligence", { cache: "no-store" });
+    if (!response.ok) throw new Error("Could not load purchasing forecast");
+    const data = await response.json();
+
+    setText("#forecast-inventory-value", money.format(data.forecast.inventoryValue));
+    setText("#forecast-running-out", numberFormat.format(data.forecast.ingredientsRunningOutThisWeek));
+    setText("#forecast-reorder-cost", money.format(data.forecast.estimatedReorderCost));
+    setText(
+      "#forecast-restock-days",
+      data.forecast.projectedDaysUntilRestockRequired === null
+        ? "Not enough data"
+        : `${numberFormat.format(data.forecast.projectedDaysUntilRestockRequired)} days`,
+    );
+    setText("#trend-monthly-spending", money.format(data.costTrends.monthlyIngredientSpending));
+    setText("#trend-next-order", money.format(data.costTrends.estimatedNextOrderCost));
+    renderCostTrend("#trend-biggest-increase", "#trend-biggest-increase-detail", data.costTrends.biggestPriceIncrease);
+    renderCostTrend("#trend-biggest-decrease", "#trend-biggest-decrease-detail", data.costTrends.biggestPriceDecrease);
+
+    const reorderBody = document.querySelector("#reorder-recommendations-body");
+    reorderBody.innerHTML = data.reorderRecommendations.length
+      ? data.reorderRecommendations.map((item) => `<tr>
+          <td><strong>${escapeHtml(item.ingredientName)}</strong></td>
+          <td>${numberFormat.format(item.currentQuantity)} ${escapeHtml(item.unit)}</td>
+          <td>${item.estimatedDailyUsage > 0 ? `${numberFormat.format(item.estimatedDailyUsage)} ${escapeHtml(item.unit)} / day` : "Not enough data"}</td>
+          <td>${item.estimatedDaysRemaining === null ? "Not enough data" : `${numberFormat.format(item.estimatedDaysRemaining)} days`}</td>
+          <td>${numberFormat.format(item.recommendedReorderQuantity)} ${escapeHtml(item.unit)}</td>
+          <td>${urgencyBadge(item.urgency)}</td>
+        </tr>`).join("")
+      : tableEmpty(6, "No inventory to forecast yet", "Add inventory, recipes, and Square sales to generate recommendations.");
+
+    const historyBody = document.querySelector("#supplier-price-history-body");
+    historyBody.innerHTML = data.supplierPriceHistory.length
+      ? data.supplierPriceHistory.map((item) => `<tr>
+          <td><strong>${escapeHtml(item.ingredientName)}</strong></td>
+          <td>${escapeHtml(item.supplier)}</td>
+          <td>${item.previousPrice === null ? "No previous price" : money.format(item.previousPrice)}</td>
+          <td>${money.format(item.currentPrice)}</td>
+          <td>${item.percentChange === null ? "Not enough history" : formatPercentChange(item.percentChange)}</td>
+        </tr>`).join("")
+      : tableEmpty(5, "No supplier price history yet", "Receipt approvals and inventory price updates will appear here.");
   } catch (error) {
     showNotice(error.message, "error");
   }
+}
+
+function renderCostTrend(valueSelector, detailSelector, trend) {
+  setText(valueSelector, trend ? trend.ingredientName : "No history");
+  setText(
+    detailSelector,
+    trend ? `${formatPercentChange(trend.percentChange)} from ${trend.supplier}` : "Add supplier prices to compare",
+  );
+}
+
+function formatPercentChange(value) {
+  const number = Number(value || 0);
+  return `${number > 0 ? "+" : ""}${numberFormat.format(number)}%`;
+}
+
+function urgencyBadge(urgency) {
+  const className = urgency === "Critical" ? "danger-pill" : urgency === "Low" ? "warning-pill" : "good-pill";
+  return `<span class="pill ${className}">${escapeHtml(urgency)}</span>`;
 }
 
 async function duplicateRecipe(id) {

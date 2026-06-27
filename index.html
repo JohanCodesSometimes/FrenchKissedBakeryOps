@@ -22,7 +22,7 @@
           <button type="button" data-view-target="recipes-view">Recipes</button>
           <button type="button" data-view-target="sales-view">Sales</button>
           <button type="button" data-view-target="reports-view">Reports</button>
-          <button type="button" data-view-target="shopping-view">Shopping</button>
+          <button type="button" data-view-target="shopping-view">Purchasing</button>
           <button type="button" data-view-target="activity-view">Activity</button>
           <button type="button" data-view-target="settings-view">Settings</button>
         </nav>
@@ -145,8 +145,15 @@
         </section>
 
         <section class="page-view" id="recipes-view" hidden>
-          <div class="section-toolbar"><label class="search-field"><span>Search recipes</span><input id="recipe-search" type="search" placeholder="Search by name or category" /></label><button class="primary-button" type="button" data-open-dialog="recipe-dialog">Create Recipe</button></div>
-          <div class="recipe-grid" id="recipe-grid"><article class="panel empty-state"><strong>No recipes created yet</strong><p>Create the first recipe to calculate food cost and margin.</p></article></div>
+          <div class="section-toolbar"><div><p class="eyebrow">Recipe Costing &amp; Profitability</p><h2>Price every bake with confidence</h2></div><button class="primary-button" type="button" data-open-dialog="recipe-dialog">Create Recipe</button></div>
+          <article class="panel recipe-calculator-panel">
+            <div class="panel-header"><div><p class="eyebrow">Calculator</p><h2>Recipe Cost Calculator</h2></div><button class="secondary-button" type="button" data-open-dialog="recipe-dialog">Calculate a Recipe</button></div>
+            <p class="settings-copy">Choose ingredients from live inventory, enter the amount used and batch yield, then BakeryOps calculates cost, profit, margin, and suggested selling prices.</p>
+          </article>
+          <article class="panel section-gap">
+            <div class="panel-header"><div><p class="eyebrow">Saved recipes</p><h2>Recipe Profitability</h2></div><label class="search-field"><span>Search recipes</span><input id="recipe-search" type="search" placeholder="Search by name or category" /></label></div>
+            <div class="table-wrap"><table><thead><tr><th>Recipe name</th><th>Cost per item</th><th>Selling price</th><th>Profit per item</th><th>Margin</th><th>Last updated</th><th>Actions</th></tr></thead><tbody id="recipe-profitability-body"><tr><td colspan="7"><div class="empty-state table-empty"><strong>No recipes created yet</strong><p>Create the first recipe to calculate food cost and profit.</p></div></td></tr></tbody></table></div>
+          </article>
         </section>
 
         <section class="page-view" id="sales-view" hidden>
@@ -175,8 +182,31 @@
         </section>
 
         <section class="page-view" id="shopping-view" hidden>
-          <div class="section-toolbar"><div class="summary-stat"><span>Estimated Shopping Total</span><strong id="shopping-total">$0.00</strong></div><button class="secondary-button" id="refresh-shopping" type="button">Refresh List</button></div>
-          <article class="panel"><div class="panel-header"><div><p class="eyebrow">Shopping list generator</p><h2>Low-stock purchase recommendations</h2></div></div><div class="table-wrap"><table><thead><tr><th>Ingredient</th><th>Current</th><th>Buy</th><th>Target</th><th>Supplier</th><th>Estimated Cost</th></tr></thead><tbody id="shopping-body"><tr><td colspan="6"><div class="empty-state table-empty"><strong>No shopping items needed</strong><p>Items appear when inventory reaches its minimum threshold.</p></div></td></tr></tbody></table></div></article>
+          <div class="section-toolbar"><div><p class="eyebrow">Purchasing Intelligence</p><h2>Know what to order, when, and why</h2></div><button class="secondary-button" id="refresh-shopping" type="button">Refresh Forecast</button></div>
+
+          <div class="metrics-grid purchasing-forecast-grid" aria-label="Inventory forecast">
+            <article class="metric-card"><span>Inventory value</span><strong id="forecast-inventory-value">$0.00</strong><small>Current estimated value</small></article>
+            <article class="metric-card"><span>Running out this week</span><strong id="forecast-running-out">0</strong><small>Based on sales-driven usage</small></article>
+            <article class="metric-card"><span>Estimated reorder cost</span><strong id="forecast-reorder-cost">$0.00</strong><small>Recommended order quantities</small></article>
+            <article class="metric-card"><span>Restock required in</span><strong id="forecast-restock-days">Not enough data</strong><small>Earliest projected need</small></article>
+          </div>
+
+          <div class="metrics-grid purchasing-trend-grid" aria-label="Cost trends">
+            <article class="metric-card"><span>Biggest price increase</span><strong id="trend-biggest-increase">No history</strong><small id="trend-biggest-increase-detail">Add supplier prices to compare</small></article>
+            <article class="metric-card"><span>Biggest price decrease</span><strong id="trend-biggest-decrease">No history</strong><small id="trend-biggest-decrease-detail">Add supplier prices to compare</small></article>
+            <article class="metric-card"><span>Monthly ingredient spending</span><strong id="trend-monthly-spending">$0.00</strong><small>Approved receipts and expenses</small></article>
+            <article class="metric-card"><span>Estimated next order</span><strong id="trend-next-order">$0.00</strong><small>At current unit costs</small></article>
+          </div>
+
+          <article class="panel">
+            <div class="panel-header"><div><p class="eyebrow">Inventory forecast</p><h2>Reorder Recommendations</h2></div><small>Daily usage uses the last 30 days of Square sales and recipe ingredient deductions.</small></div>
+            <div class="table-wrap"><table><thead><tr><th>Ingredient</th><th>Current quantity</th><th>Estimated daily usage</th><th>Estimated days remaining</th><th>Recommended reorder quantity</th><th>Urgency</th></tr></thead><tbody id="reorder-recommendations-body"><tr><td colspan="6"><div class="empty-state table-empty"><strong>No inventory to forecast yet</strong><p>Add inventory, recipes, and Square sales to generate recommendations.</p></div></td></tr></tbody></table></div>
+          </article>
+
+          <article class="panel section-gap">
+            <div class="panel-header"><div><p class="eyebrow">Purchasing history</p><h2>Supplier Price History</h2></div></div>
+            <div class="table-wrap"><table><thead><tr><th>Ingredient</th><th>Supplier</th><th>Previous price</th><th>Current price</th><th>Change</th></tr></thead><tbody id="supplier-price-history-body"><tr><td colspan="5"><div class="empty-state table-empty"><strong>No supplier price history yet</strong><p>Receipt approvals and inventory price updates will appear here.</p></div></td></tr></tbody></table></div>
+          </article>
         </section>
 
         <section class="page-view" id="activity-view" hidden>
@@ -199,7 +229,7 @@
 
     <dialog id="sale-dialog"><form class="entry-form" id="sale-form"><input name="id" type="hidden" /><div class="dialog-header"><div><p class="eyebrow">Sales tracking</p><h2 id="sale-dialog-title">Add Sale</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button></div><div class="form-grid"><label>Product<input name="product" type="text" maxlength="120" required /></label><label>Quantity Sold<input name="quantitySold" type="number" min="0.01" step="0.01" required /></label><label>Date<input name="date" type="date" required /></label><label>Sale Amount<input name="saleAmount" type="number" min="0" step="0.01" required /></label></div><div class="form-actions"><button class="ghost-button" type="button" data-close-dialog>Cancel</button><button class="primary-button" type="submit">Save Sale</button></div></form></dialog>
 
-    <dialog id="recipe-dialog" class="large-dialog"><form class="entry-form" id="recipe-form"><input name="id" type="hidden" /><div class="dialog-header"><div><p class="eyebrow">Recipe library</p><h2 id="recipe-dialog-title">Create Recipe</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button></div><div class="form-grid"><label>Recipe Name<input name="recipeName" type="text" maxlength="120" required /></label><label>Category<select name="category" required><option value="">Select category</option><option>Cookies</option><option>Cakes</option><option>Cupcakes</option><option>Brownies</option><option>Pastries</option><option>Custom</option></select></label><label>Yield Quantity<input name="yieldQuantity" type="number" min="0.01" step="0.01" required /></label><label>Yield Unit<input name="yieldUnit" type="text" maxlength="40" placeholder="cookies, cakes, servings" required /></label><label>Selling Price Per Unit<input name="sellingPrice" type="number" min="0" step="0.01" required /></label><label class="full-field">Preparation Notes<textarea name="preparationNotes" rows="3" maxlength="3000"></textarea></label></div><div class="subsection-header"><div><p class="eyebrow">Ingredients</p><h3>Recipe ingredients</h3></div><button class="secondary-button" id="add-ingredient-row" type="button">Add Ingredient</button></div><div class="ingredient-editor" id="ingredient-editor"></div><div class="form-actions"><button class="ghost-button" type="button" data-close-dialog>Cancel</button><button class="primary-button" type="submit">Save Recipe</button></div></form></dialog>
+    <dialog id="recipe-dialog" class="large-dialog"><form class="entry-form" id="recipe-form"><input name="id" type="hidden" /><div class="dialog-header"><div><p class="eyebrow">Recipe Cost Calculator</p><h2 id="recipe-dialog-title">Create Recipe</h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button></div><div class="form-grid"><label>Recipe Name<input name="recipeName" type="text" maxlength="120" required /></label><label>Category<select name="category" required><option value="">Select category</option><option>Cookies</option><option>Cakes</option><option>Cupcakes</option><option>Brownies</option><option>Pastries</option><option>Custom</option></select></label><label>Batch Yield / Servings Produced<input name="yieldQuantity" type="number" min="0.01" step="0.01" required /></label><label>Yield Unit<input name="yieldUnit" type="text" maxlength="40" placeholder="cookies, cakes, servings" required /></label><label>Selling Price Per Item<input name="sellingPrice" type="number" min="0" step="0.01" required /></label><label class="full-field">Preparation Notes<textarea name="preparationNotes" rows="3" maxlength="3000"></textarea></label></div><div class="subsection-header"><div><p class="eyebrow">Ingredients</p><h3>Recipe ingredients</h3></div><button class="secondary-button" id="add-ingredient-row" type="button">Add Ingredient</button></div><div class="ingredient-editor" id="ingredient-editor"></div><p class="calculator-note">Ingredient costs come from live inventory. Save the recipe to see total cost, profit margin, and suggested prices.</p><div class="form-actions"><button class="ghost-button" type="button" data-close-dialog>Cancel</button><button class="primary-button" type="submit">Save Recipe</button></div></form></dialog>
 
     <dialog id="recipe-detail-dialog" class="large-dialog"><div class="entry-form"><div class="dialog-header"><div><p class="eyebrow">Recipe details</p><h2 id="recipe-detail-title"></h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button></div><div id="recipe-detail-content"></div></div></dialog>
 

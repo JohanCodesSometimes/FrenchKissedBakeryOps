@@ -7,6 +7,8 @@ const { createSquareService } = require("./square");
 const { createReceiptParser } = require("./receipt-parser");
 const { buildSalesSummary } = require("./sales-analytics");
 const { applyReceiptItemsToInventory, buildInventoryIntelligence } = require("./inventory-analytics");
+const { calculateRecipeProfitability } = require("./recipe-costing");
+const { buildPurchasingIntelligence } = require("./purchasing-intelligence");
 
 const root = __dirname;
 const port = Number(process.env.PORT || 4173);
@@ -211,6 +213,24 @@ function startServer() {
         return sendJson(res, 200, buildMonthlyReport(url.searchParams.get("month")));
       }
 
+      if (url.pathname === "/api/purchasing-intelligence" && req.method === "GET") {
+        const [liveInventory, liveSales, liveRecipes, liveExpenses, livePrices, liveReceiptItems] = await Promise.all([
+          storage.loadCollection("inventory"),
+          storage.loadCollection("sales"),
+          storage.loadCollection("recipes"),
+          storage.loadCollection("expenses"),
+          storage.loadPriceHistory(),
+          storage.loadReceiptItems(),
+        ]);
+        collections.inventory = liveInventory.map((item) => migrateRecord("inventory", item));
+        collections.sales = liveSales.map((item) => migrateRecord("sales", item));
+        collections.recipes = liveRecipes.map((item) => migrateRecord("recipes", item));
+        collections.expenses = liveExpenses.map((item) => migrateRecord("expenses", item));
+        priceHistory = livePrices;
+        receiptItems = liveReceiptItems;
+        return sendJson(res, 200, buildPurchasingDashboard(), noStoreHeaders());
+      }
+
       if (url.pathname === "/api/shopping-list" && req.method === "GET") {
         return sendJson(res, 200, buildShoppingList());
       }
@@ -291,7 +311,7 @@ function latestSquareSale(paymentId, orderId) {
 
 async function createRecord(collectionName, req, res) {
   const input = await readJsonBody(req);
-  if (collectionName === "inventory") {
+  if (collectionName === "inventory" || collectionName === "recipes") {
     collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
   }
   const record = normalizeRecord(collectionName, input, {
@@ -511,7 +531,7 @@ function purgeReceiptDrafts() {
 }
 
 async function updateRecord(collectionName, id, req, res) {
-  if (collectionName === "inventory") {
+  if (collectionName === "inventory" || collectionName === "recipes") {
     collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
   }
   const index = collections[collectionName].findIndex((record) => record.id === id);
@@ -741,6 +761,19 @@ function buildMonthlyReport(requestedMonth) {
   };
 }
 
+function buildPurchasingDashboard() {
+  return buildPurchasingIntelligence({
+    inventory: collections.inventory,
+    sales: collections.sales,
+    recipes: collections.recipes,
+    priceHistory,
+    expenses: collections.expenses,
+    receiptItems,
+    now: new Date(),
+    targetMultiplier: Number(settings.shoppingTargetMultiplier || 2),
+  });
+}
+
 function buildShoppingList() {
   const multiplier = Number(settings.shoppingTargetMultiplier || 2);
   const items = collections.inventory
@@ -882,72 +915,7 @@ function enrichRecord(collectionName, record) {
 }
 
 function enrichRecipe(recipe) {
-  const breakdown = recipe.ingredients.map((ingredient) => {
-    const inventoryItem = findInventoryItem(ingredient);
-    const cost = inventoryItem ? calculateIngredientCost(ingredient, inventoryItem) : null;
-    return {
-      ...ingredient,
-      inventoryItemId: inventoryItem?.id || null,
-      inventoryUnit: inventoryItem?.unit || null,
-      costPerInventoryUnit: inventoryItem?.costPerUnit ?? null,
-      cost,
-      costAvailable: cost !== null,
-    };
-  });
-  const pricedIngredients = breakdown.filter((item) => item.costAvailable);
-  const pricedSubtotal = round(pricedIngredients.reduce((total, item) => total + item.cost, 0));
-  const allCostsAvailable = pricedIngredients.length === breakdown.length;
-  const totalRecipeCost = allCostsAvailable ? pricedSubtotal : null;
-  const costPerUnit = allCostsAvailable && recipe.yieldQuantity
-    ? round(totalRecipeCost / recipe.yieldQuantity)
-    : null;
-  const profitPerUnit = allCostsAvailable ? round(recipe.sellingPrice - costPerUnit) : null;
-  const profitMargin = allCostsAvailable && recipe.sellingPrice
-    ? round((profitPerUnit / recipe.sellingPrice) * 100)
-    : allCostsAvailable ? 0 : null;
-
-  return {
-    ...recipe,
-    costBreakdown: breakdown,
-    totalRecipeCost,
-    pricedSubtotal,
-    costPerUnit,
-    profitPerUnit,
-    profitMargin,
-    allCostsAvailable,
-  };
-}
-
-function findInventoryItem(ingredient) {
-  if (ingredient.inventoryId) {
-    const byId = collections.inventory.find((item) => item.id === ingredient.inventoryId);
-    if (byId) return byId;
-  }
-  return collections.inventory.find(
-    (item) => item.ingredientName.toLowerCase() === ingredient.ingredientName.toLowerCase(),
-  );
-}
-
-function calculateIngredientCost(ingredient, inventoryItem) {
-  const ingredientUnit = unitDefinition(ingredient.unit);
-  const inventoryUnit = unitDefinition(inventoryItem.unit);
-  if (!ingredientUnit || !inventoryUnit || ingredientUnit.group !== inventoryUnit.group) return null;
-  const inventoryUnitsUsed =
-    (ingredient.quantity * ingredientUnit.factor) / inventoryUnit.factor;
-  return round(inventoryUnitsUsed * inventoryItem.costPerUnit);
-}
-
-function unitDefinition(unit) {
-  const units = {
-    g: { group: "mass", factor: 1 },
-    kg: { group: "mass", factor: 1000 },
-    oz: { group: "mass", factor: 28.349523125 },
-    lb: { group: "mass", factor: 453.59237 },
-    count: { group: "count", factor: 1 },
-    dozen: { group: "count", factor: 12 },
-    gallon: { group: "volume", factor: 1 },
-  };
-  return units[unit] || null;
+  return calculateRecipeProfitability(recipe, collections.inventory);
 }
 
 function exportCsv(res, collectionName) {
