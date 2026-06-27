@@ -9,6 +9,12 @@ const { buildSalesSummary } = require("./sales-analytics");
 const { applyReceiptItemsToInventory, buildInventoryIntelligence } = require("./inventory-analytics");
 const { calculateRecipeProfitability } = require("./recipe-costing");
 const { buildPurchasingIntelligence } = require("./purchasing-intelligence");
+const {
+  buildCustomerInsights,
+  sortCustomers,
+  toSafeCustomer,
+  upsertCustomerFromSale,
+} = require("./customer-intelligence");
 
 const root = __dirname;
 const port = Number(process.env.PORT || 4173);
@@ -29,6 +35,7 @@ let squareConnection;
 let squareService;
 let receiptItems;
 let receipts;
+let customers;
 let receiptParser;
 const receiptDrafts = new Map();
 const squareDiagnostics = {
@@ -57,6 +64,7 @@ async function bootstrap() {
   squareConnection = state.squareConnection || {};
   receiptItems = state.receiptItems || [];
   receipts = state.receipts || [];
+  customers = state.customers || [];
   receiptParser = createReceiptParser({ env: process.env, logger: console });
   console.log(`[receipts] OpenAI Vision ${receiptParser.configured ? "configured" : "not configured"}.`);
   squareService = createSquareService({
@@ -66,6 +74,7 @@ async function bootstrap() {
     getSales: () => collections.sales,
     saveSales: () => saveCollection("sales"),
     logActivity,
+    upsertCustomer: upsertSquareCustomer,
   });
   const squareStatus = squareService.status();
   console.log(`[square] ${squareStatus.configured ? "Configured" : "Not configured"}; ${squareStatus.connected ? "connected" : "disconnected"}.`);
@@ -199,6 +208,17 @@ function startServer() {
 
       if (url.pathname === "/api/activity" && req.method === "GET") {
         return sendJson(res, 200, activity);
+      }
+
+      if (url.pathname === "/api/customers" && req.method === "GET") {
+        customers = await storage.loadCustomers();
+        const sorted = sortCustomers(customers, url.searchParams.get("sort") || "latestPurchase");
+        return sendJson(res, 200, sorted.map(toSafeCustomer), noStoreHeaders());
+      }
+
+      if (url.pathname === "/api/customer-insights" && req.method === "GET") {
+        customers = await storage.loadCustomers();
+        return sendJson(res, 200, buildCustomerInsights(customers), noStoreHeaders());
       }
 
       if (url.pathname === "/api/price-history" && req.method === "GET") {
@@ -804,13 +824,14 @@ function buildShoppingList() {
 function exportBackup(res) {
   const backup = {
     application: "BakeryOps AI",
-    schemaVersion: 3,
+    schemaVersion: 4,
     exportedAt: new Date().toISOString(),
     settings,
     expenses: collections.expenses,
     inventory: collections.inventory,
     recipes: collections.recipes,
     sales: collections.sales,
+    customers,
     receiptItems,
     receipts,
     priceHistory,
@@ -1001,6 +1022,14 @@ async function saveCollection(name) {
 
 async function saveSettings() {
   await storage.saveSettings(settings);
+}
+
+async function upsertSquareCustomer(customerInfo, sale) {
+  customers = await storage.loadCustomers();
+  const result = upsertCustomerFromSale(customers, customerInfo, sale, {
+    createId: () => crypto.randomUUID(),
+  });
+  if (!result.skipped) await storage.saveCustomers(customers);
 }
 
 function serveStatic(pathname, res) {

@@ -13,6 +13,8 @@ let appSettings = null;
 let priceHistory = [];
 let activityLog = [];
 let receiptsData = [];
+let customersData = [];
+let customerInsights = null;
 let activeView = "dashboard-view";
 let dashboardRefreshInFlight = false;
 
@@ -23,6 +25,7 @@ const viewConfig = {
   "inventory-view": { title: "Inventory", action: "Add Item", dialog: "inventory-dialog" },
   "recipes-view": { title: "Recipe Costing", action: "Create Recipe", dialog: "recipe-dialog" },
   "sales-view": { title: "Sales", action: "Add Sale", dialog: "sale-dialog" },
+  "customers-view": { title: "Contacts" },
   "reports-view": { title: "Monthly Reports" },
   "shopping-view": { title: "Purchasing Intelligence" },
   "activity-view": { title: "Activity Log" },
@@ -43,6 +46,7 @@ async function initialize() {
   bindEvents();
   await refreshAllData();
   window.setInterval(refreshDashboard, 30_000);
+  window.setInterval(refreshCustomers, 30_000);
 }
 
 function bindEvents() {
@@ -52,6 +56,8 @@ function bindEvents() {
   document.querySelector("#refresh-report").addEventListener("click", refreshReport);
   document.querySelector("#report-month").addEventListener("change", refreshReport);
   document.querySelector("#refresh-shopping").addEventListener("click", refreshShoppingList);
+  document.querySelector("#refresh-customers").addEventListener("click", refreshCustomers);
+  document.querySelector("#customer-sort").addEventListener("change", refreshCustomers);
   document.querySelector("#settings-form").addEventListener("submit", saveSettings);
   document.querySelector("#square-disconnect").addEventListener("click", disconnectSquare);
   document.querySelector("#square-sync").addEventListener("click", syncRecentSquareSales);
@@ -316,9 +322,46 @@ async function refreshAllData() {
     refreshShoppingList(),
     refreshSquareStatus(),
     refreshReceipts(),
+    refreshCustomers(),
   ]);
 }
 
+async function refreshCustomers() {
+  try {
+    const sort = document.querySelector("#customer-sort")?.value || "latestPurchase";
+    const [customersResponse, insightsResponse] = await Promise.all([
+      fetch(`/api/customers?sort=${encodeURIComponent(sort)}`, { credentials: "same-origin", cache: "no-store" }),
+      fetch("/api/customer-insights", { credentials: "same-origin", cache: "no-store" }),
+    ]);
+    if (!customersResponse.ok || !insightsResponse.ok) throw new Error("Could not load customer contacts");
+    customersData = await customersResponse.json();
+    customerInsights = await insightsResponse.json();
+    renderCustomers();
+  } catch (error) {
+    showNotice(error.message, "error");
+  }
+}
+
+function renderCustomers() {
+  const topCustomer = customerInsights?.topCustomers?.[0];
+  setText("#customer-top-name", topCustomer?.name || "No customers yet");
+  setText("#customer-top-spend", topCustomer ? `${money.format(topCustomer.totalSpend)} total spend` : "Sales with contact details will appear here");
+  setText("#customer-repeat-count", numberFormat.format(customerInsights?.repeatCustomers || 0));
+  setText("#customer-inactive-count", numberFormat.format(customerInsights?.recentlyInactiveCustomers || 0));
+  setText("#customer-new-count", numberFormat.format(customerInsights?.newCustomersThisMonth || 0));
+
+  const body = document.querySelector("#customers-body");
+  body.innerHTML = customersData.length
+    ? customersData.map((customer) => `<tr>
+        <td><strong>${escapeHtml(customer.name || "Square Customer")}</strong></td>
+        <td>${escapeHtml(customer.email || customer.phone || "Not provided")}</td>
+        <td>${money.format(customer.totalSpend || 0)}</td>
+        <td>${numberFormat.format(customer.visitCount || 0)}</td>
+        <td>${customer.latestPurchaseDate ? formatDate(customer.latestPurchaseDate) : "Not available"}</td>
+        <td>${escapeHtml(customer.favoriteProduct || "Not enough history")}</td>
+      </tr>`).join("")
+    : tableEmpty(6, "No customers yet", "Customers will appear when a Square sale includes contact information.");
+}
 async function refreshReceipts() {
   try {
     const response = await fetch("/api/receipts");

@@ -11,7 +11,7 @@ const SQUARE_ENVIRONMENTS = {
   },
 };
 
-function createSquareService({ env, storage, connection, getSales, saveSales, logActivity, fetchImpl = fetch }) {
+function createSquareService({ env, storage, connection, getSales, saveSales, logActivity, upsertCustomer = async () => {}, fetchImpl = fetch }) {
   const squareEnabled = isSquareEnabled(env);
   const rawEnvironment = String(env.SQUARE_ENVIRONMENT || "sandbox").trim().toLowerCase();
   const environment = rawEnvironment === "production" ? "production" : "sandbox";
@@ -194,8 +194,8 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     const order = orderId
       ? (await squareRequest(`/v2/orders/${encodeURIComponent(orderId)}`)).order || {}
       : {};
-    const sale = buildSale({ payment, order });
-    return persistSale(sale, options);
+    const { sale, customer } = buildSale({ payment, order });
+    return persistSale(sale, { ...options, customer });
   }
 
   async function syncOrder(orderId, options = {}) {
@@ -203,8 +203,8 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     if (!order || order.state !== "COMPLETED") return { ignored: true };
 
     const paymentId = (order.tenders || []).map((tender) => tender.payment_id).find(Boolean) || "";
-    const sale = buildSale({ payment: paymentId ? { id: paymentId, order_id: order.id } : null, order });
-    return persistSale(sale, options);
+    const { sale, customer } = buildSale({ payment: paymentId ? { id: paymentId, order_id: order.id } : null, order });
+    return persistSale(sale, { ...options, customer });
   }
 
   function buildSale({ payment, order }) {
@@ -214,22 +214,55 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     const soldAt = payment?.updated_at || payment?.created_at || order.closed_at ||
       order.updated_at || order.created_at || new Date().toISOString();
     return {
-      id: crypto.randomUUID(),
-      date: soldAt.slice(0, 10),
-      product: names.join(", ") || "Square sale",
-      quantitySold: round(quantity),
-      saleAmount: money(payment?.amount_money || order.total_money),
-      tax: money(order.total_tax_money),
-      discount: money(order.total_discount_money),
-      soldAt,
-      source: "square",
-      squarePaymentId: payment?.id || "",
-      squareOrderId: payment?.order_id || order.id || "",
-      createdAt: new Date().toISOString(),
+      sale: {
+        id: crypto.randomUUID(),
+        date: soldAt.slice(0, 10),
+        product: names.join(", ") || "Square sale",
+        quantitySold: round(quantity),
+        saleAmount: money(payment?.amount_money || order.total_money),
+        tax: money(order.total_tax_money),
+        discount: money(order.total_discount_money),
+        soldAt,
+        source: "square",
+        squarePaymentId: payment?.id || "",
+        squareOrderId: payment?.order_id || order.id || "",
+        createdAt: new Date().toISOString(),
+      },
+      customer: extractCustomerInfo({ payment, order }),
     };
   }
 
-  async function persistSale(sale, { updateConnection = true, logSale = true, eventType = "" } = {}) {
+  function extractCustomerInfo({ payment, order }) {
+    const fulfillmentRecipients = (order.fulfillments || []).flatMap((fulfillment) => [
+      fulfillment.pickup_details?.recipient,
+      fulfillment.shipment_details?.recipient,
+      fulfillment.delivery_details?.recipient,
+    ]).filter(Boolean);
+    const recipient = fulfillmentRecipients.find((item) =>
+      item.display_name || item.given_name || item.family_name || item.email_address || item.phone_number,
+    ) || {};
+    const tender = (order.tenders || []).find((item) => item.customer_id) || {};
+    const card = payment?.card_details?.card || {};
+    const recipientName = recipient.display_name ||
+      [recipient.given_name, recipient.family_name].filter(Boolean).join(" ");
+    return {
+      squareCustomerId: payment?.customer_id || order.customer_id || tender.customer_id || "",
+      name: recipientName || card.cardholder_name || "",
+      email: payment?.buyer_email_address || recipient.email_address || "",
+      phone: recipient.phone_number || "",
+    };
+  }
+
+  async function syncCustomerBestEffort(customer, sale) {
+    if (!customer || !Object.values(customer).some(Boolean)) return;
+    try {
+      await upsertCustomer(customer, sale);
+    } catch {
+      console.error("[square] customer update failed");
+    }
+  }
+
+  async function persistSale(sale, { updateConnection = true, logSale = true, eventType = "", customer = null } = {}) {
     const sales = getSales();
     const existing = findExistingSale(sale.squarePaymentId, sale.squareOrderId);
     const now = new Date().toISOString();
@@ -250,9 +283,11 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
         }
         console.log("[square] sale updated", existing.squarePaymentId || existing.squareOrderId || existing.id);
         if (logSale) await logActivity("square.sale.updated", `Square sale updated: ${existing.product}`);
+        await syncCustomerBestEffort(customer, existing);
         return { updated: true };
       }
       console.log("[square] duplicate ignored", sale.squarePaymentId || sale.squareOrderId || "unknown");
+      await syncCustomerBestEffort(customer, existing);
       return { duplicate: true };
     }
 
@@ -264,6 +299,8 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
       if (index >= 0) sales.splice(index, 1);
       throw saveError;
     }
+
+    await syncCustomerBestEffort(customer, sale);
 
     if (updateConnection) {
       connection.lastSyncAt = now;

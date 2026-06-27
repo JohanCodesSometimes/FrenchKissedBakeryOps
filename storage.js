@@ -12,6 +12,7 @@ const localFiles = {
   squareConnection: "square-connection.json",
   receiptItems: "receipt-items.json",
   receipts: "receipts.json",
+  customers: "customers.json",
 };
 
 async function createStorage({ dataDir, env = process.env, logger = console, supabaseClient = null }) {
@@ -48,6 +49,7 @@ function createLocalStorage(dataDir) {
         squareConnection: loadObject(path.join(resolvedDir, localFiles.squareConnection)),
         receiptItems: loadArray(path.join(resolvedDir, localFiles.receiptItems)),
         receipts: loadArray(path.join(resolvedDir, localFiles.receipts)),
+        customers: loadArray(path.join(resolvedDir, localFiles.customers)),
       };
       for (const name of collectionNames) {
         ensureJson(path.join(resolvedDir, `${name}.json`), state.collections[name]);
@@ -60,6 +62,7 @@ function createLocalStorage(dataDir) {
       ensureJson(path.join(resolvedDir, localFiles.squareConnection), state.squareConnection);
       ensureJson(path.join(resolvedDir, localFiles.receiptItems), state.receiptItems);
       ensureJson(path.join(resolvedDir, localFiles.receipts), state.receipts);
+      ensureJson(path.join(resolvedDir, localFiles.customers), state.customers);
       return state;
     },
     async loadCollection(name) {
@@ -71,6 +74,9 @@ function createLocalStorage(dataDir) {
     },
     async loadReceiptItems() {
       return loadArray(path.join(resolvedDir, localFiles.receiptItems));
+    },
+    async loadCustomers() {
+      return loadArray(path.join(resolvedDir, localFiles.customers));
     },
     async saveCollection(name, value) {
       writeJsonAtomic(path.join(resolvedDir, `${name}.json`), value);
@@ -99,6 +105,9 @@ function createLocalStorage(dataDir) {
     async saveReceipts(value) {
       writeJsonAtomic(path.join(resolvedDir, localFiles.receipts), value);
     },
+    async saveCustomers(value) {
+      writeJsonAtomic(path.join(resolvedDir, localFiles.customers), value);
+    },
   };
 }
 
@@ -106,7 +115,7 @@ function createSupabaseStorage(client) {
   return {
     mode: "supabase",
     async initialize() {
-      const [expenses, inventory, recipes, sales, settings, activity, supplierPrices, trendReports, squareConnection, receiptItems, receipts] =
+      const [expenses, inventory, recipes, sales, settings, activity, supplierPrices, trendReports, squareConnection, receiptItems, receipts, customers] =
         await Promise.all([
           selectAll(client, "expenses"),
           selectAll(client, "inventory_items"),
@@ -119,6 +128,7 @@ function createSupabaseStorage(client) {
           selectSquareConnection(client),
           selectReceiptItems(client),
           selectReceipts(client),
+          selectCustomers(client),
         ]);
       return {
         collections: {
@@ -139,6 +149,7 @@ function createSupabaseStorage(client) {
         squareConnection,
         receiptItems: receiptItems.map(fromReceiptItemRow),
         receipts: receipts.map(fromReceiptRow),
+        customers: customers.map(fromCustomerRow),
       };
     },
     async loadCollection(name) {
@@ -158,6 +169,9 @@ function createSupabaseStorage(client) {
     },
     async loadReceiptItems() {
       return (await selectReceiptItems(client)).map(fromReceiptItemRow);
+    },
+    async loadCustomers() {
+      return (await selectCustomers(client)).map(fromCustomerRow);
     },
     async saveCollection(name, value) {
       if (name === "recipes") return syncRecipes(client, value);
@@ -200,6 +214,9 @@ function createSupabaseStorage(client) {
     },
     async saveReceipts(value) {
       await syncTable(client, "receipts", value.map(toReceiptRow));
+    },
+    async saveCustomers(value) {
+      await syncTable(client, "customers", value.map(toCustomerRow));
     },
   };
 }
@@ -247,6 +264,15 @@ async function selectReceipts(client) {
     return await selectAll(client, "receipts", "uploaded_at", false);
   } catch (error) {
     if (/receipts|schema cache|does not exist/i.test(error.message)) return [];
+    throw error;
+  }
+}
+
+async function selectCustomers(client) {
+  try {
+    return await selectAll(client, "customers", "latest_purchase_date", false);
+  } catch (error) {
+    if (/customers|schema cache|does not exist/i.test(error.message)) return [];
     throw error;
   }
 }
@@ -482,6 +508,41 @@ function fromReceiptRow(row) {
     errorCode: row.error_code || "",
     uploadedAt: row.uploaded_at,
     approvedAt: row.approved_at || "",
+  };
+}
+
+function toCustomerRow(item) {
+  return {
+    id: item.id,
+    square_customer_id: item.squareCustomerId || null,
+    name: item.name || "",
+    email: item.email || "",
+    phone: item.phone || "",
+    first_purchase_date: item.firstPurchaseDate || null,
+    latest_purchase_date: item.latestPurchaseDate || null,
+    total_spend: item.totalSpend || 0,
+    visit_count: item.visitCount || 0,
+    favorite_product: item.favoriteProduct || "",
+    purchase_history: item.purchaseHistory || {},
+    created_at: item.createdAt || new Date().toISOString(),
+    updated_at: item.updatedAt || null,
+  };
+}
+function fromCustomerRow(row) {
+  return {
+    id: row.id,
+    squareCustomerId: row.square_customer_id || "",
+    name: row.name || "",
+    email: row.email || "",
+    phone: row.phone || "",
+    firstPurchaseDate: row.first_purchase_date || "",
+    latestPurchaseDate: row.latest_purchase_date || "",
+    totalSpend: Number(row.total_spend || 0),
+    visitCount: Number(row.visit_count || 0),
+    favoriteProduct: row.favorite_product || "",
+    purchaseHistory: row.purchase_history || {},
+    createdAt: row.created_at,
+    updatedAt: row.updated_at || "",
   };
 }
 

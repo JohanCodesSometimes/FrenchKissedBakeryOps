@@ -21,6 +21,7 @@
           <button type="button" data-view-target="inventory-view">Inventory</button>
           <button type="button" data-view-target="recipes-view">Recipes</button>
           <button type="button" data-view-target="sales-view">Sales</button>
+          <button type="button" data-view-target="customers-view">Contacts</button>
           <button type="button" data-view-target="reports-view">Reports</button>
           <button type="button" data-view-target="shopping-view">Purchasing</button>
           <button type="button" data-view-target="activity-view">Activity</button>
@@ -175,6 +176,19 @@
           </article>
         </section>
 
+        <section class="page-view" id="customers-view" hidden>
+          <div class="section-toolbar"><div><p class="eyebrow">Customer intelligence</p><h2>Know your regulars and stay connected</h2></div><div class="panel-actions"><label class="search-field"><span>Sort contacts</span><select id="customer-sort"><option value="latestPurchase">Latest purchase</option><option value="totalSpend">Total spend</option></select></label><button class="secondary-button" id="refresh-customers" type="button">Refresh Contacts</button></div></div>
+          <section class="metrics-grid customer-insights-grid" aria-label="Customer insights">
+            <article class="metric-card"><span>Top customer</span><strong id="customer-top-name">No customers yet</strong><small id="customer-top-spend">Sales with contact details will appear here</small></article>
+            <article class="metric-card"><span>Repeat customers</span><strong id="customer-repeat-count">0</strong><small>More than one purchase</small></article>
+            <article class="metric-card"><span>Recently inactive</span><strong id="customer-inactive-count">0</strong><small>No purchase in 60 days</small></article>
+            <article class="metric-card"><span>New this month</span><strong id="customer-new-count">0</strong><small>First purchase this month</small></article>
+          </section>
+          <article class="panel">
+            <div class="panel-header"><div><p class="eyebrow">Contact list</p><h2>Customers</h2></div><small>Built from Square sales that include customer details</small></div>
+            <div class="table-wrap"><table><thead><tr><th>Customer</th><th>Email or phone</th><th>Total spend</th><th>Visits</th><th>Latest purchase</th><th>Favorite product</th></tr></thead><tbody id="customers-body"><tr><td colspan="6"><div class="empty-state table-empty"><strong>No customers yet</strong><p>Customers will appear when a Square sale includes contact information.</p></div></td></tr></tbody></table></div>
+          </article>
+        </section>
         <section class="page-view" id="reports-view" hidden>
           <div class="section-toolbar"><label class="search-field month-field"><span>Report month</span><input id="report-month" type="month" /></label><button class="secondary-button" id="refresh-report" type="button">Refresh Report</button></div>
           <div class="metrics-grid sales-metrics"><article class="metric-card"><span>Revenue</span><strong id="report-revenue">$0.00</strong></article><article class="metric-card"><span>Expenses</span><strong id="report-expenses">$0.00</strong></article><article class="metric-card highlight"><span>Estimated Profit</span><strong id="report-profit">$0.00</strong></article></div>

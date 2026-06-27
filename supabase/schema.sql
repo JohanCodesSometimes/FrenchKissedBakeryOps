@@ -62,6 +62,22 @@ create table if not exists public.sales (
   updated_at timestamptz
 );
 
+create table if not exists public.customers (
+  id uuid primary key default gen_random_uuid(),
+  square_customer_id text unique,
+  name text not null default '',
+  email text not null default '',
+  phone text not null default '',
+  first_purchase_date date not null,
+  latest_purchase_date date not null,
+  total_spend numeric(12,2) not null default 0 check (total_spend >= 0),
+  visit_count integer not null default 0 check (visit_count >= 0),
+  favorite_product text not null default '',
+  purchase_history jsonb not null default '{}'::jsonb,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz
+);
+
 create table if not exists public.supplier_prices (
   id uuid primary key default gen_random_uuid(),
   inventory_item_id uuid references public.inventory_items(id) on delete set null,
@@ -187,6 +203,14 @@ create unique index if not exists sales_square_order_unique_idx
   where square_order_id is not null;
 create index if not exists inventory_name_idx on public.inventory_items(lower(ingredient_name));
 create index if not exists recipe_ingredients_recipe_idx on public.recipe_ingredients(recipe_id);
+create unique index if not exists customers_email_unique_idx
+  on public.customers(lower(email))
+  where email <> '';
+create unique index if not exists customers_phone_unique_idx
+  on public.customers(phone)
+  where phone <> '';
+create index if not exists customers_latest_purchase_idx on public.customers(latest_purchase_date desc);
+create index if not exists customers_total_spend_idx on public.customers(total_spend desc);
 create index if not exists supplier_prices_ingredient_idx on public.supplier_prices(lower(ingredient_name), recorded_at desc);
 create index if not exists activity_log_timestamp_idx on public.activity_log(timestamp desc);
 create index if not exists trend_reports_created_idx on public.trend_reports(created_at desc);
@@ -199,6 +223,7 @@ alter table public.inventory_items enable row level security;
 alter table public.recipes enable row level security;
 alter table public.recipe_ingredients enable row level security;
 alter table public.sales enable row level security;
+alter table public.customers enable row level security;
 alter table public.supplier_prices enable row level security;
 alter table public.trend_reports enable row level security;
 alter table public.activity_log enable row level security;
