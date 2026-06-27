@@ -354,13 +354,14 @@ function renderCustomers() {
   body.innerHTML = customersData.length
     ? customersData.map((customer) => `<tr>
         <td><strong>${escapeHtml(customer.name || "Square Customer")}</strong></td>
-        <td>${escapeHtml(customer.email || customer.phone || "Not provided")}</td>
+        <td>${escapeHtml(customer.email || "Not provided")}</td>
+        <td>${escapeHtml(customer.phone || "Not provided")}</td>
         <td>${money.format(customer.totalSpend || 0)}</td>
         <td>${numberFormat.format(customer.visitCount || 0)}</td>
         <td>${customer.latestPurchaseDate ? formatDate(customer.latestPurchaseDate) : "Not available"}</td>
         <td>${escapeHtml(customer.favoriteProduct || "Not enough history")}</td>
       </tr>`).join("")
-    : tableEmpty(6, "No customers yet", "Customers will appear when a Square sale includes contact information.");
+    : tableEmpty(7, "No customers yet", "Customers will appear when a Square sale includes contact information.");
 }
 async function refreshReceipts() {
   try {
@@ -410,7 +411,12 @@ async function refreshSquareStatus() {
     document.querySelector("#square-environment").textContent = titleCase(status.environment);
     document.querySelector("#square-merchant").textContent = status.merchantId || "Not connected";
     document.querySelector("#square-last-sync").textContent = status.lastSyncAt ? formatDateTime(status.lastSyncAt) : "Never";
-    connect.hidden = status.connected;
+    const needsCustomerReconnect = status.connected && !status.customerReadEnabled;
+    if (needsCustomerReconnect) {
+      document.querySelector("#square-status-copy").textContent = "Reconnect Square once to display customer names and phone numbers.";
+    }
+    connect.hidden = status.connected && !needsCustomerReconnect;
+    connect.textContent = needsCustomerReconnect ? "Reconnect for Customer Details" : "Connect Square";
     connect.setAttribute("aria-disabled", String(!status.configured));
     connect.onclick = status.configured ? null : (event) => event.preventDefault();
     disconnect.hidden = !status.connected;

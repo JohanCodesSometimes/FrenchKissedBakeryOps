@@ -115,7 +115,7 @@ test("Square OAuth callback persists merchant, tokens, scopes, environment, and 
         refresh_token: "refresh-token",
         expires_at: "2026-06-24T00:00:00Z",
         merchant_id: "merchant-123",
-        scopes: "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ",
+        scopes: "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ CUSTOMERS_READ",
       }; } };
     },
   });
@@ -124,7 +124,7 @@ test("Square OAuth callback persists merchant, tokens, scopes, environment, and 
 
   assert.equal(connection.merchantId, "merchant-123");
   assert.equal(connection.tokenExpiresAt, "2026-06-24T00:00:00Z");
-  assert.equal(connection.scopes, "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ");
+  assert.equal(connection.scopes, "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ CUSTOMERS_READ");
   assert.equal(connection.environment, "sandbox");
   assert.ok(connection.accessToken.startsWith("v1."));
   assert.ok(connection.refreshToken.startsWith("v1."));
@@ -132,6 +132,7 @@ test("Square OAuth callback persists merchant, tokens, scopes, environment, and 
   assert.equal(savedConnections.at(-1).refreshToken, connection.refreshToken);
   const status = service.status();
   assert.equal(status.connected, true);
+  assert.equal(status.customerReadEnabled, true);
   assert.equal(status.merchantId, "merchant-123");
   assert.equal(status.environment, "sandbox");
   assert.equal(status.tokenExpiresAt, "2026-06-24T00:00:00Z");
@@ -270,7 +271,7 @@ test("Square OAuth uses fresh state and the correct sandbox and production autho
   assert.equal(`${sandbox.origin}${sandbox.pathname}`, "https://connect.squareupsandbox.com/oauth2/authorize");
   assert.equal(sandbox.searchParams.get("client_id"), "app-id");
   assert.equal(sandbox.searchParams.get("redirect_uri"), "https://example.test/api/square/oauth/callback");
-  assert.equal(sandbox.searchParams.get("scope"), "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ");
+  assert.equal(sandbox.searchParams.get("scope"), "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ CUSTOMERS_READ");
   assert.notEqual(sandbox.searchParams.get("state"), secondSandbox.searchParams.get("state"));
 
   const mutableEnv = {
@@ -313,7 +314,7 @@ test("Square connect final handler is isolated from cached script.js", () => {
   const fix = fs.readFileSync(path.join(root, "square-connect-fix.js"), "utf8");
   assert.match(html, /id="square-connect" type="button"/);
   assert.match(html, /Square UI build final-square-oauth-2026-06-23-1/);
-  const scriptIndex = html.indexOf('<script src="script.js?v=2026-06-23-oauth-handler-fix"></script>');
+  const scriptIndex = html.indexOf('<script src="script.js?v=2026-06-27-customer-details"></script>');
   const fixIndex = html.indexOf('<script src="/square-connect-fix.js?v=final-square-oauth-2026-06-23-1"></script>');
   assert.ok(scriptIndex >= 0, "script.js must be loaded");
   assert.ok(fixIndex > scriptIndex, "square-connect-fix.js must load after script.js");

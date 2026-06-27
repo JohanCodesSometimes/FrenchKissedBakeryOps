@@ -25,7 +25,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     signatureKey: env.SQUARE_WEBHOOK_SIGNATURE_KEY || "",
     webhookUrl: env.SQUARE_WEBHOOK_URL || "",
     version: env.SQUARE_VERSION || "2026-05-20",
-    scopes: "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ",
+    scopes: "MERCHANT_PROFILE_READ PAYMENTS_READ ORDERS_READ CUSTOMERS_READ",
     oauthAuthorizeUrl: endpoints.oauthAuthorizeUrl,
     squareEnabled,
   };
@@ -47,6 +47,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
       lastError: connection.lastError || null,
       tokenExpiresAt: connection.tokenExpiresAt || "",
       refreshTokenPresent: Boolean(connection.refreshToken),
+      customerReadEnabled: String(connection.scopes || "").split(/\s+/).includes("CUSTOMERS_READ"),
     };
   }
 
@@ -195,7 +196,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
       ? (await squareRequest(`/v2/orders/${encodeURIComponent(orderId)}`)).order || {}
       : {};
     const { sale, customer } = buildSale({ payment, order });
-    return persistSale(sale, { ...options, customer });
+    return persistSale(sale, { ...options, customer: await enrichCustomerInfo(customer) });
   }
 
   async function syncOrder(orderId, options = {}) {
@@ -204,7 +205,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
 
     const paymentId = (order.tenders || []).map((tender) => tender.payment_id).find(Boolean) || "";
     const { sale, customer } = buildSale({ payment: paymentId ? { id: paymentId, order_id: order.id } : null, order });
-    return persistSale(sale, { ...options, customer });
+    return persistSale(sale, { ...options, customer: await enrichCustomerInfo(customer) });
   }
 
   function buildSale({ payment, order }) {
@@ -253,6 +254,23 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     };
   }
 
+  async function enrichCustomerInfo(customerInfo) {
+    if (!customerInfo.squareCustomerId) return customerInfo;
+    try {
+      const result = await squareRequest(`/v2/customers/${encodeURIComponent(customerInfo.squareCustomerId)}`);
+      const profile = result.customer || {};
+      const profileName = [profile.given_name, profile.family_name].filter(Boolean).join(" ") || profile.company_name || "";
+      return {
+        ...customerInfo,
+        name: profileName || customerInfo.name,
+        email: profile.email_address || customerInfo.email,
+        phone: profile.phone_number || customerInfo.phone,
+      };
+    } catch {
+      console.error("[square] customer profile lookup failed");
+      return customerInfo;
+    }
+  }
   async function syncCustomerBestEffort(customer, sale) {
     if (!customer || !Object.values(customer).some(Boolean)) return;
     try {

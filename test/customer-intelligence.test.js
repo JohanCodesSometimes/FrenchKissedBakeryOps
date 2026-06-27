@@ -63,7 +63,8 @@ test("Square sales with customer data create and update one customer", async () 
   const customers = [];
   const responses = {
     "/v2/payments/payment-1": { payment: { id: "payment-1", order_id: "order-1", customer_id: "square-customer-1", buyer_email_address: "owner@example.test", status: "COMPLETED", amount_money: { amount: 1000 }, updated_at: "2026-06-10T12:00:00Z" } },
-    "/v2/orders/order-1": { order: { id: "order-1", line_items: [{ name: "Sourdough", quantity: "1" }], fulfillments: [{ pickup_details: { recipient: { display_name: "Morgan Lee", phone_number: "+15550102000" } } }] } },
+    "/v2/orders/order-1": { order: { id: "order-1", line_items: [{ name: "Sourdough", quantity: "1" }] } },
+    "/v2/customers/square-customer-1": { customer: { id: "square-customer-1", given_name: "Morgan", family_name: "Lee", email_address: "morgan@example.test", phone_number: "+15550102000" } },
     "/v2/payments/payment-2": { payment: { id: "payment-2", order_id: "order-2", customer_id: "square-customer-1", status: "COMPLETED", amount_money: { amount: 600 }, updated_at: "2026-06-21T12:00:00Z" } },
     "/v2/orders/order-2": { order: { id: "order-2", line_items: [{ name: "Sourdough", quantity: "1" }] } },
   };
@@ -83,6 +84,8 @@ test("Square sales with customer data create and update one customer", async () 
   assert.equal(sales.length, 2);
   assert.equal(customers.length, 1);
   assert.equal(customers[0].name, "Morgan Lee");
+  assert.equal(customers[0].email, "morgan@example.test");
+  assert.equal(customers[0].phone, "+15550102000");
   assert.equal(customers[0].totalSpend, 16);
   assert.equal(customers[0].visitCount, 2);
   assert.equal(customers[0].favoriteProduct, "Sourdough");
@@ -145,4 +148,5 @@ test("customer API serialization returns safe fields and supports insight sortin
   const html = fs.readFileSync(path.join(__dirname, "..", "index.html"), "utf8");
   assert.match(html, /No customers yet/);
   assert.match(html, /data-view-target="customers-view"/);
+  assert.match(html, /<th>Email<\/th><th>Phone<\/th>/);
 });
