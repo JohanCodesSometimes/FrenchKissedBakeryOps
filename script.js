@@ -611,7 +611,7 @@ function renderSalesDependentViews() {
   setText("#summary-average", money.format(summary.averageTicket));
   setText("#summary-transactions", numberFormat.format(summary.totalTransactions));
   setText("#sales-refreshed-at", `Updated ${formatDateTime(appData.updatedAt)} - checks every 12 seconds`);
-  renderSalesHistory("#dashboard-sales-history", 7, false);
+  renderSalesHistory("#dashboard-sales-history", 9, false);
   setText("#revenue-today", money.format(financials.revenueToday));
   setText("#revenue-month", money.format(financials.revenueThisMonth));
   setText("#estimated-profit", money.format(financials.estimatedProfit));
@@ -748,11 +748,11 @@ function renderSales() {
   setText("#sales-transactions", numberFormat.format(appData.salesSummary.totalTransactions));
   const body = document.querySelector("#sales-body");
   if (!appData.sales.length) {
-    body.innerHTML = tableEmpty(8, "No sales recorded yet", "Completed Square sales and manual entries will appear here.");
+    body.innerHTML = tableEmpty(10, "No sales recorded yet", "Completed Square sales and manual entries will appear here.");
   } else {
     body.innerHTML = appData.sales
       .map(
-        (sale) => `<tr><td>${formatDate(sale.date)}</td><td><strong>${escapeHtml(sale.product)}</strong></td><td>${numberFormat.format(sale.quantitySold)}</td><td>${money.format(sale.saleAmount)}</td><td>${money.format(sale.tax || 0)}</td><td>${money.format(sale.discount || 0)}</td><td>${sourceBadge(sale.source)}</td><td>${rowActions("sales", sale.id)}</td></tr>`,
+        (sale) => `<tr><td>${formatDate(sale.date)}</td><td><strong>${escapeHtml(sale.product)}</strong></td><td>${numberFormat.format(sale.quantitySold)}</td><td>${money.format(sale.saleAmount)}</td><td>${money.format(sale.refundedAmount || 0)}</td><td>${saleStatusBadge(sale.status)}</td><td>${money.format(sale.tax || 0)}</td><td>${money.format(sale.discount || 0)}</td><td>${sourceBadge(sale.source)}</td><td>${rowActions("sales", sale.id)}</td></tr>`,
       )
       .join("");
   }
@@ -776,6 +776,7 @@ function renderSalesHistory(selector, columns, includeActions) {
   body.innerHTML = appData.sales.map((sale) => `<tr>
     <td>${formatDate(sale.date)}</td><td><strong>${escapeHtml(sale.product)}</strong></td>
     <td>${numberFormat.format(sale.quantitySold)}</td><td>${money.format(sale.saleAmount)}</td>
+    <td>${money.format(sale.refundedAmount || 0)}</td><td>${saleStatusBadge(sale.status)}</td>
     <td>${money.format(sale.tax || 0)}</td><td>${money.format(sale.discount || 0)}</td>
     <td>${sourceBadge(sale.source)}</td>${includeActions ? `<td>${rowActions("sales", sale.id)}</td>` : ""}
   </tr>`).join("");
@@ -783,6 +784,14 @@ function renderSalesHistory(selector, columns, includeActions) {
 
 function sourceBadge(source) {
   return `<span class="source-badge ${escapeHtml(source || "manual")}">${escapeHtml(titleCase(source || "manual"))}</span>`;
+}
+
+function saleStatusBadge(status = "completed") {
+  const normalized = String(status || "completed").toLowerCase();
+  const className = ["refunded", "canceled", "failed"].includes(normalized)
+    ? "danger-pill"
+    : normalized === "partially_refunded" || normalized === "pending" ? "warning-pill" : "good-pill";
+  return `<span class="pill ${className}">${escapeHtml(titleCase(normalized.replaceAll("_", " ")))}</span>`;
 }
 
 function bindCrudForm(formId, collection, successMessage, payloadBuilder = defaultPayload) {

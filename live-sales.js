@@ -24,6 +24,9 @@
       sale.product,
       sale.quantitySold,
       sale.saleAmount,
+      sale.grossAmount,
+      sale.refundedAmount,
+      sale.status,
       sale.tax,
       sale.discount,
       sale.soldAt,
@@ -32,6 +35,7 @@
       sale.squareOrderId,
       sale.createdAt,
       sale.updatedAt,
+      sale.lifecycleUpdatedAt,
     ]);
   }
 

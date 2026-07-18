@@ -27,7 +27,7 @@ function supabaseSalesClient(getRows) {
 
 test("dashboard sales values match live Supabase database totals", async () => {
   let databaseRows = [
-    { id: "1", date: "2026-06-26", product: "Croissant", quantity_sold: "2", sale_amount: "25.00", tax: "1.50", discount: "0", source: "square", created_at: "2026-06-26T14:00:00Z" },
+    { id: "1", date: "2026-06-26", product: "Croissant", quantity_sold: "2", sale_amount: "20.00", gross_amount: "25.00", refunded_amount: "5.00", status: "partially_refunded", tax: "1.50", discount: "0", source: "square", created_at: "2026-06-26T14:00:00Z" },
     { id: "2", date: "2026-06-24", product: "Baguette", quantity_sold: "1", sale_amount: "15.00", tax: "0", discount: "2.00", source: "square", created_at: "2026-06-24T14:00:00Z" },
     { id: "3", date: "2026-06-01", product: "Cake", quantity_sold: "1", sale_amount: "20.00", tax: "0", discount: "0", source: "manual", created_at: "2026-06-01T14:00:00Z" },
     { id: "4", date: "2026-05-31", product: "Tart", quantity_sold: "4", sale_amount: "40.00", tax: "2.00", discount: "1.00", source: "square", created_at: "2026-05-31T14:00:00Z" },
@@ -41,10 +41,10 @@ test("dashboard sales values match live Supabase database totals", async () => {
 
   let sales = await storage.loadCollection("sales");
   assert.deepEqual(buildSalesSummary(sales, new Date(2026, 5, 26, 12)), {
-    todaySales: 25,
-    weekSales: 40,
-    monthSales: 60,
-    averageTicket: 25,
+    todaySales: 20,
+    weekSales: 35,
+    monthSales: 55,
+    averageTicket: 23.75,
     totalTransactions: 4,
   });
   assert.deepEqual(
@@ -56,15 +56,36 @@ test("dashboard sales values match live Supabase database totals", async () => {
       { product: "Tart", tax: 2, discount: 1, source: "square" },
     ],
   );
+  assert.deepEqual(
+    (({ grossAmount, refundedAmount, status }) => ({ grossAmount, refundedAmount, status }))(sales[0]),
+    { grossAmount: 25, refundedAmount: 5, status: "partially_refunded" },
+  );
 
   databaseRows = [...databaseRows, { id: "5", date: "2026-06-26", product: "Cookie", quantity_sold: "1", sale_amount: "5.00", tax: "0", discount: "0", source: "square", created_at: "2026-06-26T15:00:00Z" }];
   sales = await storage.loadCollection("sales");
   assert.deepEqual(buildSalesSummary(sales, new Date(2026, 5, 26, 12)), {
-    todaySales: 30,
-    weekSales: 45,
-    monthSales: 65,
-    averageTicket: 21,
+    todaySales: 25,
+    weekSales: 40,
+    monthSales: 60,
+    averageTicket: 20,
     totalTransactions: 5,
+  });
+});
+
+test("sales summaries exclude canceled and fully refunded transactions", () => {
+  const date = "2026-06-26";
+  const sales = [
+    { date, saleAmount: 10, status: "completed" },
+    { date, saleAmount: 5, grossAmount: 10, status: "partially_refunded" },
+    { date, saleAmount: 0, grossAmount: 8, refundedAmount: 8, status: "refunded" },
+    { date, saleAmount: 0, grossAmount: 7, status: "canceled" },
+  ];
+  assert.deepEqual(buildSalesSummary(sales, new Date(2026, 5, 26, 12)), {
+    todaySales: 15,
+    weekSales: 15,
+    monthSales: 15,
+    averageTicket: 7.5,
+    totalTransactions: 2,
   });
 });
 
@@ -81,7 +102,7 @@ test("sales summary and history provide a graceful empty state", () => {
   const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
   const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
   assert.match(html, /id="dashboard-sales-history"/);
-  assert.match(html, /<th>Tax<\/th><th>Discount<\/th><th>Source<\/th>/);
+  assert.match(html, /<th>Refunded<\/th><th>Status<\/th><th>Tax<\/th><th>Discount<\/th><th>Source<\/th>/);
   assert.match(script, /BakeryLiveSales\.createPollController/);
   assert.match(script, /tableEmpty\(columns, "No sales recorded yet"/);
 });

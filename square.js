@@ -1,4 +1,5 @@
 const crypto = require("crypto");
+const SQUARE_REQUEST_TIMEOUT_MS = 12_000;
 
 const SQUARE_ENVIRONMENTS = {
   sandbox: {
@@ -122,6 +123,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
   async function processWebhook(event) {
     const paymentTypes = new Set(["payment.created", "payment.updated"]);
     const orderTypes = new Set(["order.created", "order.updated"]);
+    const refundTypes = new Set(["refund.created", "refund.updated"]);
 
     if (paymentTypes.has(event?.type)) {
       const paymentId = event.data?.id || event.data?.object?.payment?.id;
@@ -135,6 +137,14 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
         event.data?.object?.order_created?.order_id;
       if (!orderId) return { accepted: true, ignored: true };
       return { accepted: true, ...await syncOrder(orderId, { eventType: event.type }) };
+    }
+
+    if (refundTypes.has(event?.type)) {
+      const refund = event.data?.object?.refund || {};
+      const refundId = event.data?.id || refund.id || "";
+      const paymentId = refund.payment_id || event.data?.object?.refund_updated?.payment_id || "";
+      if (!refundId && !paymentId) return { accepted: true, ignored: true };
+      return { accepted: true, ...await syncRefund(refundId, paymentId, { eventType: event.type }) };
     }
 
     return { accepted: true, ignored: true };
@@ -189,7 +199,19 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
 
   async function syncPayment(paymentId, suppliedPayment = null, options = {}) {
     const payment = suppliedPayment || (await squareRequest(`/v2/payments/${encodeURIComponent(paymentId)}`)).payment;
-    if (!payment || payment.status !== "COMPLETED") return { ignored: true };
+    if (!payment) return { ignored: true };
+
+    if (payment.status !== "COMPLETED") {
+      const existing = findExistingSale(payment.id || paymentId, payment.order_id || "");
+      if (!existing) return { ignored: true };
+      const status = normalizePaymentStatus(payment.status);
+      return persistSale({
+        ...existing,
+        status,
+        saleAmount: status === "pending" ? existing.saleAmount : 0,
+        lifecycleUpdatedAt: payment.updated_at || new Date().toISOString(),
+      }, options);
+    }
 
     const orderId = payment.order_id || "";
     const order = orderId
@@ -201,32 +223,64 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
 
   async function syncOrder(orderId, options = {}) {
     const order = (await squareRequest(`/v2/orders/${encodeURIComponent(orderId)}`)).order;
-    if (!order || order.state !== "COMPLETED") return { ignored: true };
+    if (!order) return { ignored: true };
+    if (!order.state) return { ignored: true };
+
+    if (order.state !== "COMPLETED") {
+      const existing = findExistingSale("", order.id || orderId);
+      if (!existing) return { ignored: true };
+      const status = order.state === "CANCELED" ? "canceled" : "pending";
+      return persistSale({
+        ...existing,
+        status,
+        saleAmount: status === "canceled" ? 0 : existing.saleAmount,
+        lifecycleUpdatedAt: order.updated_at || new Date().toISOString(),
+      }, options);
+    }
 
     const paymentId = (order.tenders || []).map((tender) => tender.payment_id).find(Boolean) || "";
     const { sale, customer } = buildSale({ payment: paymentId ? { id: paymentId, order_id: order.id } : null, order });
     return persistSale(sale, { ...options, customer: await enrichCustomerInfo(customer) });
   }
 
+  async function syncRefund(refundId, suppliedPaymentId, options = {}) {
+    let paymentId = suppliedPaymentId;
+    if (!paymentId && refundId) {
+      const result = await squareRequest(`/v2/refunds/${encodeURIComponent(refundId)}`);
+      paymentId = result.refund?.payment_id || "";
+    }
+    if (!paymentId) return { ignored: true };
+    return syncPayment(paymentId, null, options);
+  }
+
   function buildSale({ payment, order }) {
     const lineItems = Array.isArray(order.line_items) ? order.line_items : [];
     const names = lineItems.map((item) => item.name || item.variation_name).filter(Boolean);
     const quantity = lineItems.reduce((total, item) => total + (Number(item.quantity) || 0), 0) || 1;
-    const soldAt = payment?.updated_at || payment?.created_at || order.closed_at ||
-      order.updated_at || order.created_at || new Date().toISOString();
+    const soldAt = payment?.created_at || order.closed_at || order.created_at ||
+      payment?.updated_at || order.updated_at || new Date().toISOString();
+    const grossAmount = money(payment?.amount_money || order.total_money);
+    const refundedAmount = Math.min(grossAmount, money(payment?.refunded_money));
+    const status = refundedAmount > 0
+      ? refundedAmount >= grossAmount ? "refunded" : "partially_refunded"
+      : "completed";
     return {
       sale: {
         id: crypto.randomUUID(),
         date: soldAt.slice(0, 10),
         product: names.join(", ") || "Square sale",
         quantitySold: round(quantity),
-        saleAmount: money(payment?.amount_money || order.total_money),
+        saleAmount: round(Math.max(grossAmount - refundedAmount, 0)),
+        grossAmount,
+        refundedAmount,
+        status,
         tax: money(order.total_tax_money),
         discount: money(order.total_discount_money),
         soldAt,
         source: "square",
         squarePaymentId: payment?.id || "",
         squareOrderId: payment?.order_id || order.id || "",
+        lifecycleUpdatedAt: payment?.updated_at || order.updated_at || soldAt,
         createdAt: new Date().toISOString(),
       },
       customer: extractCustomerInfo({ payment, order }),
@@ -286,13 +340,15 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     const now = new Date().toISOString();
 
     if (existing) {
-      if (eventType.endsWith(".updated")) {
-        Object.assign(existing, {
-          ...sale,
-          id: existing.id,
-          createdAt: existing.createdAt || sale.createdAt,
-          updatedAt: now,
-        });
+      const next = {
+        ...existing,
+        ...sale,
+        id: existing.id,
+        createdAt: existing.createdAt || sale.createdAt,
+      };
+      if (saleFingerprint(existing) !== saleFingerprint(next)) {
+        next.updatedAt = now;
+        Object.assign(existing, next);
         await saveSales();
         if (updateConnection) {
           connection.lastSyncAt = now;
@@ -300,15 +356,17 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
           await storage.saveSquareConnection(connection);
         }
         console.log("[square] sale updated", existing.squarePaymentId || existing.squareOrderId || existing.id);
-        if (logSale) await logActivity("square.sale.updated", `Square sale updated: ${existing.product}`);
+        if (logSale) await logActivity("square.sale.updated", `Square sale updated (${existing.status}): ${existing.product}`);
         await syncCustomerBestEffort(customer, existing);
-        return { updated: true };
+        return { updated: true, status: existing.status };
       }
       console.log("[square] duplicate ignored", sale.squarePaymentId || sale.squareOrderId || "unknown");
-      await syncCustomerBestEffort(customer, existing);
       return { duplicate: true };
     }
 
+    sale.status = sale.status || "completed";
+    sale.grossAmount = Number(sale.grossAmount ?? sale.saleAmount ?? 0);
+    sale.refundedAmount = Number(sale.refundedAmount || 0);
     sales.unshift(sale);
     try {
       await saveSales();
@@ -327,7 +385,7 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     }
     console.log("[square] sale created", sale.squarePaymentId || sale.squareOrderId || sale.id);
     if (logSale) await logActivity("square.sale.synced", `Square sale synced: ${sale.product}`);
-    return { synced: true };
+    return { synced: true, status: sale.status };
   }
 
   function isDuplicate(paymentId, orderId) {
@@ -341,15 +399,51 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
     );
   }
 
+  function saleFingerprint(sale) {
+    return JSON.stringify([
+      sale.product,
+      sale.quantitySold,
+      sale.saleAmount,
+      sale.grossAmount,
+      sale.refundedAmount,
+      sale.tax,
+      sale.discount,
+      sale.status,
+      sale.squarePaymentId,
+      sale.squareOrderId,
+      sale.lifecycleUpdatedAt,
+    ]);
+  }
+
+  function normalizePaymentStatus(status) {
+    return {
+      CANCELED: "canceled",
+      FAILED: "failed",
+      PENDING: "pending",
+      APPROVED: "pending",
+    }[String(status || "").toUpperCase()] || "pending";
+  }
+
   async function squareRequest(path, options = {}) {
     refreshConfig();
     const headers = { "Content-Type": "application/json", "Square-Version": config.version };
     if (options.authenticated !== false) headers.Authorization = `Bearer ${await accessToken()}`;
-    const response = await fetchImpl(`${config.baseUrl}${path}`, {
-      method: options.method || "GET",
-      headers,
-      body: options.body ? JSON.stringify(options.body) : undefined,
-    });
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), SQUARE_REQUEST_TIMEOUT_MS);
+    timeout.unref?.();
+    let response;
+    try {
+      response = await fetchImpl(`${config.baseUrl}${path}`, {
+        method: options.method || "GET",
+        headers,
+        body: options.body ? JSON.stringify(options.body) : undefined,
+        signal: controller.signal,
+      });
+    } catch (error) {
+      throw publicError(error?.name === "AbortError" ? "Square request timed out." : "Square is temporarily unavailable.", 502);
+    } finally {
+      clearTimeout(timeout);
+    }
     const result = await response.json().catch(() => ({}));
     if (!response.ok) {
       const detail = result.errors?.[0]?.detail || `Square request failed (${response.status})`;

@@ -5,7 +5,7 @@ const crypto = require("crypto");
 const { createStorage } = require("./storage");
 const { createSquareService } = require("./square");
 const { createReceiptParser } = require("./receipt-parser");
-const { buildSalesSummary } = require("./sales-analytics");
+const { buildSalesSummary, effectiveQuantity, isRevenueSale } = require("./sales-analytics");
 const { applyReceiptItemsToInventory, buildInventoryIntelligence } = require("./inventory-analytics");
 const { calculateRecipeProfitability } = require("./recipe-costing");
 const { buildPurchasingIntelligence } = require("./purchasing-intelligence");
@@ -738,12 +738,16 @@ function normalizeRecord(collectionName, input, metadata) {
   }
 
   if (collectionName === "sales") {
+    const saleAmount = requiredMoney(input.saleAmount ?? input.total, "Sale amount");
     return {
       ...metadata,
       date: requiredDate(input.date, "Sale date"),
       product: requiredText(input.product ?? input.productName, "Product"),
       quantitySold: requiredPositiveNumber(input.quantitySold ?? input.quantity, "Quantity sold"),
-      saleAmount: requiredMoney(input.saleAmount ?? input.total, "Sale amount"),
+      saleAmount,
+      grossAmount: saleAmount,
+      refundedAmount: 0,
+      status: "completed",
     };
   }
 
@@ -854,14 +858,14 @@ async function importRecords(collectionName, req, res) {
 function buildMonthlyReport(requestedMonth) {
   const currentMonth = localDateKey(new Date()).slice(0, 7);
   const month = /^\d{4}-\d{2}$/.test(requestedMonth || "") ? requestedMonth : currentMonth;
-  const sales = collections.sales.filter((sale) => sale.date.startsWith(month));
+  const sales = collections.sales.filter((sale) => isRevenueSale(sale) && sale.date.startsWith(month));
   const expenses = collections.expenses.filter((expense) => expense.date.startsWith(month));
   const revenue = sum(sales, "saleAmount");
   const expenseTotal = sum(expenses, "amount");
   const products = new Map();
   sales.forEach((sale) => {
     const item = products.get(sale.product) || { product: sale.product, quantitySold: 0, revenue: 0 };
-    item.quantitySold = round(item.quantitySold + sale.quantitySold);
+    item.quantitySold = round(item.quantitySold + effectiveQuantity(sale));
     item.revenue = round(item.revenue + sale.saleAmount);
     products.set(sale.product, item);
   });
@@ -926,7 +930,7 @@ function buildShoppingList() {
 function exportBackup(res) {
   const backup = {
     application: "BakeryOps AI",
-    schemaVersion: 4,
+    schemaVersion: 5,
     exportedAt: new Date().toISOString(),
     settings,
     expenses: collections.expenses,
@@ -987,9 +991,8 @@ function buildDashboard() {
   const todayKey = localDateKey(now);
   const monthKey = todayKey.slice(0, 7);
   const salesSummary = buildSalesSummary(collections.sales, now);
-  const monthSales = collections.sales.filter((sale) => sale.date.startsWith(monthKey));
   const monthExpenses = collections.expenses.filter((expense) => expense.date.startsWith(monthKey));
-  const monthRevenue = sum(monthSales, "saleAmount");
+  const monthRevenue = salesSummary.monthSales;
   const monthExpenseTotal = sum(monthExpenses, "amount");
   const inventory = buildInventoryIntelligence(collections.inventory);
 
@@ -1052,12 +1055,13 @@ function normalizeSalesCursor(value) {
 function buildProductPerformance() {
   const totals = new Map();
   for (const sale of collections.sales) {
+    if (!isRevenueSale(sale)) continue;
     const current = totals.get(sale.product) || {
       product: sale.product,
       quantitySold: 0,
       revenue: 0,
     };
-    current.quantitySold = round(current.quantitySold + sale.quantitySold);
+    current.quantitySold = round(current.quantitySold + effectiveQuantity(sale));
     current.revenue = round(current.revenue + sale.saleAmount);
     totals.set(sale.product, current);
   }
@@ -1099,11 +1103,15 @@ function migrateRecord(name, record) {
     return { ...record, amount: Number(record.amount ?? record.total ?? 0) };
   }
   if (name === "sales") {
+    const saleAmount = Number(record.saleAmount ?? record.total ?? 0);
     return {
       ...record,
       product: record.product ?? record.productName ?? "",
       quantitySold: Number(record.quantitySold ?? record.quantity ?? 0),
-      saleAmount: Number(record.saleAmount ?? record.total ?? 0),
+      saleAmount,
+      grossAmount: Number(record.grossAmount ?? saleAmount),
+      refundedAmount: Number(record.refundedAmount || 0),
+      status: record.status || "completed",
     };
   }
   if (name === "inventory") {

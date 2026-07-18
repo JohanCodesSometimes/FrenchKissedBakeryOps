@@ -393,10 +393,42 @@ function fromRecipeIngredientRow(row) {
   return { inventoryId: row.inventory_item_id || "", ingredientName: row.ingredient_name, quantity: Number(row.quantity), unit: row.unit };
 }
 function toSaleRow(item) {
-  return { ...toMetadata(item), date: item.date, product: item.product, quantity_sold: item.quantitySold, sale_amount: item.saleAmount, tax: item.tax || 0, discount: item.discount || 0, source: item.source || "manual", square_payment_id: item.squarePaymentId || null, square_order_id: item.squareOrderId || null, sold_at: item.soldAt || `${item.date}T12:00:00Z` };
+  return {
+    ...toMetadata(item),
+    date: item.date,
+    product: item.product,
+    quantity_sold: item.quantitySold,
+    sale_amount: item.saleAmount,
+    gross_amount: item.grossAmount ?? item.saleAmount,
+    refunded_amount: item.refundedAmount || 0,
+    status: item.status || "completed",
+    tax: item.tax || 0,
+    discount: item.discount || 0,
+    source: item.source || "manual",
+    square_payment_id: item.squarePaymentId || null,
+    square_order_id: item.squareOrderId || null,
+    sold_at: item.soldAt || `${item.date}T12:00:00Z`,
+    lifecycle_updated_at: item.lifecycleUpdatedAt || null,
+  };
 }
 function fromSaleRow(row) {
-  return { ...fromMetadata(row), date: row.date, product: row.product, quantitySold: Number(row.quantity_sold), saleAmount: Number(row.sale_amount), tax: Number(row.tax || 0), discount: Number(row.discount || 0), source: row.source || "manual", squarePaymentId: row.square_payment_id || undefined, squareOrderId: row.square_order_id || undefined, soldAt: row.sold_at || undefined };
+  return {
+    ...fromMetadata(row),
+    date: row.date,
+    product: row.product,
+    quantitySold: Number(row.quantity_sold),
+    saleAmount: Number(row.sale_amount),
+    grossAmount: Number(row.gross_amount || row.sale_amount || 0),
+    refundedAmount: Number(row.refunded_amount || 0),
+    status: row.status || "completed",
+    tax: Number(row.tax || 0),
+    discount: Number(row.discount || 0),
+    source: row.source || "manual",
+    squarePaymentId: row.square_payment_id || undefined,
+    squareOrderId: row.square_order_id || undefined,
+    soldAt: row.sold_at || undefined,
+    lifecycleUpdatedAt: row.lifecycle_updated_at || undefined,
+  };
 }
 function toActivityRow(item) {
   return { id: item.id, action: item.action, description: item.description, timestamp: item.timestamp };

@@ -52,12 +52,16 @@ create table if not exists public.sales (
   product text not null,
   quantity_sold numeric(14,4) not null check (quantity_sold > 0),
   sale_amount numeric(12,2) not null check (sale_amount >= 0),
+  gross_amount numeric(12,2) not null default 0,
+  refunded_amount numeric(12,2) not null default 0,
+  status text not null default 'completed',
   tax numeric(12,2) not null default 0,
   discount numeric(12,2) not null default 0,
   sold_at timestamptz,
   source text not null default 'manual',
   square_payment_id text unique,
   square_order_id text,
+  lifecycle_updated_at timestamptz,
   created_at timestamptz not null default now(),
   updated_at timestamptz
 );
@@ -195,11 +199,35 @@ alter table public.receipt_items
 
 alter table public.square_connections add column if not exists scopes text;
 
+alter table public.sales
+  add column if not exists gross_amount numeric(12,2) not null default 0,
+  add column if not exists refunded_amount numeric(12,2) not null default 0,
+  add column if not exists status text not null default 'completed',
+  add column if not exists lifecycle_updated_at timestamptz;
+
+do $$
+begin
+  if not exists (select 1 from pg_constraint where conname = 'sales_lifecycle_status_check') then
+    alter table public.sales
+      add constraint sales_lifecycle_status_check
+      check (status in ('completed','partially_refunded','refunded','canceled','failed','pending'));
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'sales_gross_amount_check') then
+    alter table public.sales
+      add constraint sales_gross_amount_check check (gross_amount >= 0);
+  end if;
+  if not exists (select 1 from pg_constraint where conname = 'sales_refunded_amount_check') then
+    alter table public.sales
+      add constraint sales_refunded_amount_check check (refunded_amount >= 0);
+  end if;
+end $$;
+
 create index if not exists expenses_date_idx on public.expenses(date);
 create index if not exists sales_date_idx on public.sales(date);
 create index if not exists sales_source_idx on public.sales(source);
 create index if not exists sales_created_at_idx on public.sales(created_at desc);
 create index if not exists sales_updated_at_idx on public.sales(updated_at desc) where updated_at is not null;
+create index if not exists sales_status_idx on public.sales(status);
 create unique index if not exists sales_square_order_unique_idx
   on public.sales(square_order_id)
   where square_order_id is not null;

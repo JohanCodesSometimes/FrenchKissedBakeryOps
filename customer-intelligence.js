@@ -30,11 +30,15 @@ function upsertCustomerFromSale(customers, customerInfo, sale, { createId, now =
   const saleKey = sale.squarePaymentId || sale.squareOrderId || sale.id;
   if (saleKey) {
     customer.purchaseHistory = { ...(customer.purchaseHistory || {}) };
-    customer.purchaseHistory[saleKey] = {
-      date: sale.date,
-      amount: round(sale.saleAmount),
-      products: splitProducts(sale.product),
-    };
+    if (["refunded", "canceled", "failed", "pending"].includes(String(sale.status || "").toLowerCase())) {
+      delete customer.purchaseHistory[saleKey];
+    } else {
+      customer.purchaseHistory[saleKey] = {
+        date: sale.date,
+        amount: round(sale.saleAmount),
+        products: splitProducts(sale.product),
+      };
+    }
   }
   recomputeCustomer(customer);
   customer.updatedAt = timestamp;

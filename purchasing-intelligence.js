@@ -1,3 +1,5 @@
+const { effectiveQuantity, isRevenueSale } = require("./sales-analytics");
+
 const unitDefinitions = {
   g: { group: "mass", factor: 1 },
   kg: { group: "mass", factor: 1000 },
@@ -95,14 +97,14 @@ function calculateDailyUsage({ inventory = [], sales = [], recipes = [], now = n
   cutoff.setDate(cutoff.getDate() - lookbackDays + 1);
   const recentSquareSales = sales.filter((sale) => {
     const saleDate = new Date(String(sale.date || "") + "T00:00:00");
-    return (sale.source || "").toLowerCase() === "square" && saleDate >= cutoff && saleDate <= now;
+    return (sale.source || "").toLowerCase() === "square" && isRevenueSale(sale) && saleDate >= cutoff && saleDate <= now;
   });
 
   for (const sale of recentSquareSales) {
     const productNames = String(sale.product || "").split(",").map(normalizeName).filter(Boolean);
     const matchingRecipes = recipes.filter((recipe) => productNames.includes(normalizeName(recipe.recipeName)));
     if (!matchingRecipes.length) continue;
-    const soldPerRecipe = Number(sale.quantitySold || 0) / matchingRecipes.length;
+    const soldPerRecipe = effectiveQuantity(sale) / matchingRecipes.length;
     for (const recipe of matchingRecipes) {
       const yieldQuantity = Number(recipe.yieldQuantity || 0);
       if (!(yieldQuantity > 0)) continue;

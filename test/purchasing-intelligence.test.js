@@ -25,7 +25,9 @@ function fixture() {
       ],
     }],
     sales: [
-      { date: "2026-06-25", product: "Cookie Batch", quantitySold: 30, source: "square" },
+      { date: "2026-06-25", product: "Cookie Batch", quantitySold: 30, source: "square", status: "completed" },
+      { date: "2026-06-25", product: "Cookie Batch", quantitySold: 100, source: "square", status: "refunded" },
+      { date: "2026-06-25", product: "Cookie Batch", quantitySold: 100, source: "square", status: "canceled" },
       { date: "2026-06-25", product: "Cookie Batch", quantitySold: 100, source: "manual" },
       { date: "2026-05-01", product: "Cookie Batch", quantitySold: 100, source: "square" },
     ],

@@ -63,7 +63,7 @@ test("Square webhook verification, completed sale sync, and deduplication", asyn
 
   assert.equal(service.verifyWebhook(raw, signature), true);
   assert.equal(service.verifyWebhook(raw, "invalid"), false);
-  assert.deepEqual(await service.processWebhook(JSON.parse(raw)), { accepted: true, synced: true });
+  assert.deepEqual(await service.processWebhook(JSON.parse(raw)), { accepted: true, synced: true, status: "completed" });
   assert.equal(sales.length, 1);
   assert.equal(sales[0].product, "Croissant, Coffee");
   assert.equal(sales[0].quantitySold, 3);
@@ -73,18 +73,94 @@ test("Square webhook verification, completed sale sync, and deduplication", asyn
   assert.equal(saveCount, 1);
   assert.ok(savedConnections.at(-1).lastSyncAt);
   assert.deepEqual(await service.processWebhook({ type: "payment.created", data: { id: "payment-1" } }), { accepted: true, duplicate: true });
-  assert.deepEqual(await service.processWebhook(JSON.parse(raw)), { accepted: true, updated: true });
+  assert.deepEqual(await service.processWebhook(JSON.parse(raw)), { accepted: true, duplicate: true });
   assert.deepEqual(
     await service.processWebhook({ type: "order.updated", data: { id: "order-1" } }),
     { accepted: true, ignored: true },
   );
   assert.deepEqual(
     await service.processWebhook({ type: "order.updated", data: { id: "order-2" } }),
-    { accepted: true, synced: true },
+    { accepted: true, synced: true, status: "completed" },
   );
   assert.equal(sales[0].squareOrderId, "order-2");
   assert.equal(sales[0].source, "square");
-  assert.equal(saveCount, 3);
+  assert.equal(saveCount, 2);
+});
+
+test("Square lifecycle reconciliation handles refunds and cancellations idempotently", async () => {
+  const sales = [];
+  let saveCount = 0;
+  let payment = {
+    id: "payment-life",
+    order_id: "order-life",
+    status: "COMPLETED",
+    amount_money: { amount: 2000, currency: "USD" },
+    refunded_money: { amount: 0, currency: "USD" },
+    created_at: "2026-07-18T10:00:00Z",
+    updated_at: "2026-07-18T10:00:00Z",
+  };
+  const order = {
+    id: "order-life",
+    state: "COMPLETED",
+    line_items: [{ name: "Baguette", quantity: "2" }],
+    total_money: { amount: 2000 },
+  };
+  const service = createSquareService({
+    env: {
+      SQUARE_ENVIRONMENT: "sandbox",
+      SQUARE_CLIENT_ID: "app-id",
+      SQUARE_APPLICATION_SECRET: "app-secret",
+      SQUARE_REDIRECT_URI: "https://example.test/api/square/oauth/callback",
+    },
+    storage: { async saveSquareConnection() {} },
+    connection: { accessToken: "token", merchantId: "merchant" },
+    getSales: () => sales,
+    saveSales: async () => { saveCount += 1; },
+    logActivity: async () => {},
+    fetchImpl: async (url) => {
+      const pathname = new URL(url).pathname;
+      return { ok: true, async json() { return pathname.includes("/payments/") ? { payment } : { order }; } };
+    },
+  });
+
+  assert.deepEqual(
+    await service.processWebhook({ type: "payment.created", data: { id: payment.id } }),
+    { accepted: true, synced: true, status: "completed" },
+  );
+  assert.equal(sales.length, 1);
+  assert.equal(sales[0].grossAmount, 20);
+  assert.equal(sales[0].saleAmount, 20);
+
+  payment = { ...payment, refunded_money: { amount: 500 }, updated_at: "2026-07-18T11:00:00Z" };
+  const partialRefund = { type: "refund.created", data: { id: "refund-1", object: { refund: { id: "refund-1", payment_id: payment.id } } } };
+  assert.deepEqual(await service.processWebhook(partialRefund), { accepted: true, updated: true, status: "partially_refunded" });
+  assert.equal(sales[0].saleAmount, 15);
+  assert.equal(sales[0].refundedAmount, 5);
+  assert.deepEqual(await service.processWebhook({ ...partialRefund, type: "refund.updated" }), { accepted: true, duplicate: true });
+
+  payment = { ...payment, refunded_money: { amount: 2000 }, updated_at: "2026-07-18T12:00:00Z" };
+  assert.deepEqual(
+    await service.processWebhook({ type: "payment.updated", data: { id: payment.id } }),
+    { accepted: true, updated: true, status: "refunded" },
+  );
+  assert.equal(sales[0].saleAmount, 0);
+
+  payment = { ...payment, status: "CANCELED", updated_at: "2026-07-18T13:00:00Z" };
+  assert.deepEqual(
+    await service.processWebhook({ type: "payment.updated", data: { id: payment.id } }),
+    { accepted: true, updated: true, status: "canceled" },
+  );
+  assert.deepEqual(
+    await service.processWebhook({ type: "payment.updated", data: { id: payment.id } }),
+    { accepted: true, duplicate: true },
+  );
+  assert.equal(sales.length, 1);
+  assert.equal(saveCount, 4);
+  const schema = fs.readFileSync(path.join(__dirname, "..", "supabase", "schema.sql"), "utf8");
+  assert.match(schema, /add column if not exists gross_amount/);
+  assert.match(schema, /add column if not exists refunded_amount/);
+  assert.match(schema, /add column if not exists status/);
+  assert.match(schema, /sales_lifecycle_status_check/);
 });
 
 
@@ -141,7 +217,22 @@ test("Square OAuth callback persists merchant, tokens, scopes, environment, and 
 
 
 test("manual recent Square sync imports completed payments and reports duplicates", async () => {
-  const sales = [{ squarePaymentId: "payment-old", squareOrderId: "order-old" }];
+  const sales = [{
+    id: "sale-old",
+    date: "2026-06-19",
+    product: "Brownie",
+    quantitySold: 3,
+    saleAmount: 5,
+    grossAmount: 5,
+    refundedAmount: 0,
+    tax: 0.5,
+    discount: 0.25,
+    status: "completed",
+    source: "square",
+    squarePaymentId: "payment-old",
+    squareOrderId: "order-old",
+    lifecycleUpdatedAt: "2026-06-19T12:00:00Z",
+  }];
   const connection = { accessToken: "test-token", merchantId: "merchant-1" };
   const env = {
     SQUARE_ENVIRONMENT: "sandbox",
@@ -165,7 +256,7 @@ test("manual recent Square sync imports completed payments and reports duplicate
         ? {
           payments: [
             { id: "payment-new", order_id: "order-new", status: "COMPLETED", amount_money: { amount: 900 }, updated_at: "2026-06-20T12:00:00Z" },
-            { id: "payment-old", order_id: "order-old", status: "COMPLETED", amount_money: { amount: 500 } },
+            { id: "payment-old", order_id: "order-old", status: "COMPLETED", amount_money: { amount: 500 }, updated_at: "2026-06-19T12:00:00Z" },
             { id: "payment-pending", status: "PENDING", amount_money: { amount: 300 } },
           ],
         }

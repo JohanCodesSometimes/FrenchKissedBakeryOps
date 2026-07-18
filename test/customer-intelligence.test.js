@@ -56,6 +56,10 @@ test("customer totals are created and updated idempotently without duplicates", 
   assert.equal(customers[0].totalSpend, 20);
   assert.equal(customers[0].visitCount, 2);
   assert.equal(customers[0].favoriteProduct, "Croissant");
+
+  upsertCustomerFromSale(customers, { squareCustomerId: "square-customer-1" }, sale({ status: "refunded", saleAmount: 0 }), options);
+  assert.equal(customers[0].totalSpend, 8);
+  assert.equal(customers[0].visitCount, 1);
 });
 
 test("Square sales with customer data create and update one customer", async () => {
@@ -79,8 +83,8 @@ test("Square sales with customer data create and update one customer", async () 
     fetchImpl: async (url) => ({ ok: true, async json() { return responses[new URL(url).pathname]; } }),
   });
 
-  assert.deepEqual(await service.processWebhook({ type: "payment.created", data: { id: "payment-1" } }), { accepted: true, synced: true });
-  assert.deepEqual(await service.processWebhook({ type: "payment.created", data: { id: "payment-2" } }), { accepted: true, synced: true });
+  assert.deepEqual(await service.processWebhook({ type: "payment.created", data: { id: "payment-1" } }), { accepted: true, synced: true, status: "completed" });
+  assert.deepEqual(await service.processWebhook({ type: "payment.created", data: { id: "payment-2" } }), { accepted: true, synced: true, status: "completed" });
   assert.equal(sales.length, 2);
   assert.equal(customers.length, 1);
   assert.equal(customers[0].name, "Morgan Lee");
@@ -111,7 +115,7 @@ test("Square sale ingestion succeeds when no customer data is present", async ()
     },
   });
 
-  assert.deepEqual(await service.processWebhook({ type: "payment.created", data: { id: "anonymous-payment" } }), { accepted: true, synced: true });
+  assert.deepEqual(await service.processWebhook({ type: "payment.created", data: { id: "anonymous-payment" } }), { accepted: true, synced: true, status: "completed" });
   assert.equal(sales.length, 1);
   assert.equal(customerUpdates, 0);
 });
