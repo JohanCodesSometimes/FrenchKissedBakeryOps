@@ -17,6 +17,12 @@ const localFiles = {
 
 async function createStorage({ dataDir, env = process.env, logger = console, supabaseClient = null }) {
   const config = getSupabaseConfig(env);
+  const production = String(env.NODE_ENV || "").toLowerCase() === "production";
+  if (production && !config.enabled) {
+    throw new Error(
+      "Production requires complete Supabase configuration; JSON fallback is disabled. Set SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY.",
+    );
+  }
   if (config.partial) {
     logger.warn(
       "[storage] Supabase variables are incomplete; using local JSON. Set SUPABASE_URL, SUPABASE_ANON_KEY, and SUPABASE_SERVICE_ROLE_KEY together.",

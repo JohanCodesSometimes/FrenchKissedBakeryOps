@@ -1,4 +1,5 @@
 const { createClient } = require("@supabase/supabase-js");
+const DATABASE_REQUEST_TIMEOUT_MS = 12_000;
 
 function getSupabaseConfig(env = process.env) {
   const url = String(env.SUPABASE_URL || "").trim();
@@ -25,8 +26,24 @@ function createServerSupabaseClient(config) {
     },
     global: {
       headers: { "X-Client-Info": "bakeryops-ai-server" },
+      fetch: fetchWithTimeout,
     },
   });
 }
 
-module.exports = { getSupabaseConfig, createServerSupabaseClient };
+async function fetchWithTimeout(input, init = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), DATABASE_REQUEST_TIMEOUT_MS);
+  timeout.unref?.();
+  const abort = () => controller.abort();
+  if (init.signal?.aborted) controller.abort();
+  else init.signal?.addEventListener("abort", abort, { once: true });
+  try {
+    return await fetch(input, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timeout);
+    init.signal?.removeEventListener("abort", abort);
+  }
+}
+
+module.exports = { DATABASE_REQUEST_TIMEOUT_MS, createServerSupabaseClient, fetchWithTimeout, getSupabaseConfig };

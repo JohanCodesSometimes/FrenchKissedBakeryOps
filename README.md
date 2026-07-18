@@ -1,6 +1,6 @@
 # BakeryOps AI
 
-Private bakery operations dashboard with optional Supabase storage, persistent JSON fallback, and Square POS sales sync.
+Private bakery operations dashboard with Supabase production storage, local JSON development storage, and Square POS sales sync.
 
 ## Run Locally
 
@@ -18,7 +18,7 @@ Open `http://127.0.0.1:4173`.
 Start command:
 
 ```text
-npm start
+NODE_ENV=production npm start
 ```
 
 Variables:
@@ -26,20 +26,23 @@ Variables:
 ```text
 BAKERYOPS_USER=owner
 BAKERYOPS_PASSWORD=<strong password>
+NODE_ENV=production
 HOST=0.0.0.0
-DATA_DIR=/data
 OPENAI_API_KEY=<OpenAI API key>
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_ANON_KEY=<project anon key>
+SUPABASE_SERVICE_ROLE_KEY=<server-only service role key>
 ```
 
-Railway provides `PORT`. The persistent volume must remain mounted at `/data`.
+Railway provides `PORT`. `package.json` requires Node 20 or newer, which Nixpacks honors. The Railway configuration exposes `/api/health` before database bootstrap completes, retries failed Supabase startup in the background, and does not require a persistent volume.
 
-## Optional Supabase Storage
+## Storage
 
-BakeryOps selects one storage backend at startup:
+BakeryOps uses storage according to the runtime environment:
 
-- If all Supabase variables are present, it uses Supabase.
-- If they are absent, it uses JSON files in `DATA_DIR`.
-- If only some variables are present, it logs a warning and uses JSON.
+- Production requires all three Supabase variables and never falls back to JSON.
+- Local development uses Supabase when all three variables are present.
+- Local development uses JSON files in `DATA_DIR` when Supabase is absent or incomplete.
 
 ```text
 SUPABASE_URL=https://your-project.supabase.co
@@ -48,6 +51,8 @@ SUPABASE_SERVICE_ROLE_KEY=<server-only service role key>
 ```
 
 Run `supabase/schema.sql` in the Supabase SQL Editor before adding these variables to Railway. The service-role key stays on the Node server and is never returned to the frontend.
+
+If Supabase is unavailable, `/api/health` remains available while database-dependent routes return a structured `503 DATABASE_UNAVAILABLE` response with `Retry-After`. BakeryOps retries with bounded exponential backoff and reloads application state after recovery.
 
 Re-run the schema after updating BakeryOps to create the private `square_connections`, `receipts`, and `receipt_items` tables. Row-level security is enabled and no public policy is created for them.
 

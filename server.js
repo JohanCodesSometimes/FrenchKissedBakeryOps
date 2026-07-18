@@ -10,6 +10,7 @@ const { applyReceiptItemsToInventory, buildInventoryIntelligence } = require("./
 const { calculateRecipeProfitability } = require("./recipe-costing");
 const { buildPurchasingIntelligence } = require("./purchasing-intelligence");
 const { mergeSales } = require("./live-sales");
+const { createRecoveryManager } = require("./resilience");
 const {
   buildCustomerInsights,
   sortCustomers,
@@ -24,6 +25,8 @@ const username = process.env.BAKERYOPS_USER || "owner";
 const password = process.env.BAKERYOPS_PASSWORD;
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
 const collectionNames = ["expenses", "inventory", "recipes", "sales"];
+const requestTimeoutMs = 30_000;
+const gracefulShutdownMs = 10_000;
 
 let storage;
 let collections;
@@ -38,6 +41,10 @@ let receiptItems;
 let receipts;
 let customers;
 let receiptParser;
+let httpServer;
+let recoveryManager;
+let applicationReady = false;
+let shuttingDown = false;
 const receiptDrafts = new Map();
 const squareDiagnostics = {
   latestWebhookReceivedAt: "",
@@ -51,9 +58,25 @@ const types = {
   ".js": "application/javascript; charset=utf-8",
 };
 
-async function bootstrap() {
-  storage = await createStorage({ dataDir, env: process.env, logger: console });
-  const state = await storage.initialize();
+function bootstrap() {
+  receiptParser = createReceiptParser({ env: process.env, logger: console });
+  console.log(`[receipts] OpenAI Vision ${receiptParser.configured ? "configured" : "not configured"}.`);
+  recoveryManager = createRecoveryManager({
+    connect: initializeApplicationState,
+    onReady: () => { applicationReady = true; },
+    onUnavailable: () => { applicationReady = false; },
+    logger: console,
+  });
+  startServer();
+  void recoveryManager.start();
+  process.once("SIGTERM", () => gracefulShutdown("SIGTERM"));
+  process.once("SIGINT", () => gracefulShutdown("SIGINT"));
+}
+
+async function initializeApplicationState() {
+  const nextStorage = await createStorage({ dataDir, env: process.env, logger: console });
+  const state = await nextStorage.initialize();
+  storage = nextStorage;
   collections = Object.fromEntries(
     collectionNames.map((name) => [name, (state.collections[name] || []).map((item) => migrateRecord(name, item))]),
   );
@@ -66,8 +89,6 @@ async function bootstrap() {
   receiptItems = state.receiptItems || [];
   receipts = state.receipts || [];
   customers = state.customers || [];
-  receiptParser = createReceiptParser({ env: process.env, logger: console });
-  console.log(`[receipts] OpenAI Vision ${receiptParser.configured ? "configured" : "not configured"}.`);
   squareService = createSquareService({
     env: process.env,
     storage,
@@ -82,17 +103,43 @@ async function bootstrap() {
   console.log(`[square] merchant stored: ${squareStatus.merchantId || "none"}`);
   console.log(`[square] token expiration: ${squareStatus.tokenExpiresAt || "none"}`);
   console.log(`[square] refresh token present: ${squareStatus.refreshTokenPresent}`);
-  startServer();
+  console.log(`Storage mode: ${storage.mode}`);
+  if (storage.mode === "json") console.log(`Persistent data directory: ${dataDir}`);
+  return { storageMode: storage.mode };
 }
 
 function startServer() {
-  http
-  .createServer(async (req, res) => {
+  httpServer = http.createServer(async (req, res) => {
+    const requestTimer = setTimeout(() => {
+      if (!res.writableEnded) {
+        sendJson(res, 504, {
+          error: { code: "REQUEST_TIMEOUT", message: "The request timed out.", retryable: true },
+        });
+      }
+    }, requestTimeoutMs);
+    requestTimer.unref?.();
+    res.once("finish", () => clearTimeout(requestTimer));
+    res.once("close", () => clearTimeout(requestTimer));
     try {
       const url = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
       if (url.pathname === "/api/health") {
-        return sendJson(res, 200, { ok: true, storageMode: storage.mode, dataDir: storage.mode === "json" ? dataDir : null });
+        const recovery = recoveryManager.status();
+        return sendJson(res, 200, {
+          ok: true,
+          service: "bakeryops-ai",
+          database: {
+            ready: applicationReady,
+            state: recovery.state,
+            storageMode: applicationReady ? storage.mode : null,
+            attempts: recovery.attempts,
+            retryAt: recovery.retryAt || null,
+          },
+        }, noStoreHeaders());
+      }
+
+      if (url.pathname.startsWith("/api/") && !applicationReady) {
+        return sendDatabaseUnavailable(res);
       }
 
       if (url.pathname === "/api/square/oauth/callback" && req.method === "GET") {
@@ -302,22 +349,67 @@ function startServer() {
       return serveStatic(url.pathname, res);
     } catch (error) {
       console.error(error);
+      if (isDatabaseFailure(error)) {
+        applicationReady = false;
+        recoveryManager.reportFailure(error);
+        return sendDatabaseUnavailable(res);
+      }
       const status = error.statusCode || 500;
       sendJson(res, status, { error: status === 500 ? "Internal server error" : error.message });
     }
-  })
-  .listen(port, host, () => {
-    console.log(`BakeryOps AI running on ${host}:${port}`);
-    console.log(`Storage mode: ${storage.mode}`);
-    if (storage.mode === "json") console.log(`Persistent data directory: ${dataDir}`);
+  });
+  httpServer.requestTimeout = requestTimeoutMs;
+  httpServer.headersTimeout = Math.min(requestTimeoutMs, 15_000);
+  httpServer.keepAliveTimeout = 5_000;
+  httpServer.listen(port, host, () => {
+    const address = httpServer.address();
+    console.log(`BakeryOps AI running on ${host}:${address?.port || port}`);
     if (!password) console.log("Set BAKERYOPS_PASSWORD to require a login before sharing.");
   });
 }
 
-bootstrap().catch((error) => {
-  console.error(`[startup] ${error.message}`);
-  process.exitCode = 1;
-});
+bootstrap();
+
+function sendDatabaseUnavailable(res) {
+  const recovery = recoveryManager.status();
+  const retrySeconds = recovery.retryAt
+    ? Math.max(1, Math.ceil((Date.parse(recovery.retryAt) - Date.now()) / 1000))
+    : 2;
+  return sendJson(res, 503, {
+    error: {
+      code: "DATABASE_UNAVAILABLE",
+      message: "BakeryOps data is temporarily unavailable. Recovery is running in the background.",
+      retryable: true,
+    },
+    database: {
+      state: recovery.state,
+      attempts: recovery.attempts,
+      retryAt: recovery.retryAt || null,
+    },
+  }, { ...noStoreHeaders(), "Retry-After": String(retrySeconds) });
+}
+
+function isDatabaseFailure(error) {
+  return /^\[storage\]/i.test(String(error?.message || "")) ||
+    /Supabase|PostgREST|PGRST\d+/i.test(String(error?.message || ""));
+}
+
+function gracefulShutdown(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal} received; closing HTTP server.`);
+  recoveryManager.stop();
+  const forceTimer = setTimeout(() => {
+    console.error("[shutdown] graceful shutdown timed out");
+    process.exitCode = 1;
+    httpServer.closeAllConnections?.();
+  }, gracefulShutdownMs);
+  forceTimer.unref?.();
+  httpServer.close(() => {
+    clearTimeout(forceTimer);
+    console.log("[shutdown] complete");
+  });
+}
 
 function squareWebhookConfigured() {
   return Boolean(process.env.SQUARE_WEBHOOK_SIGNATURE_KEY && process.env.SQUARE_WEBHOOK_URL);
@@ -1115,6 +1207,8 @@ function requireLogin(res) {
 }
 
 function sendJson(res, status, body, headers = {}) {
+  if (res.writableEnded) return;
+  if (res.headersSent) return res.end();
   res.writeHead(status, { "Content-Type": "application/json; charset=utf-8", ...headers });
   res.end(JSON.stringify(body));
 }
