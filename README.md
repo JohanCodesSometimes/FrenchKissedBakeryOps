@@ -36,6 +36,12 @@ SUPABASE_SERVICE_ROLE_KEY=<server-only service role key>
 
 Railway provides `PORT`. `package.json` requires Node 20 or newer, which Nixpacks honors. The Railway configuration exposes `/api/health` before database bootstrap completes, retries failed Supabase startup in the background, and does not require a persistent volume.
 
+### Production Authentication
+
+`BAKERYOPS_PASSWORD` is required whenever `NODE_ENV=production`. BakeryOps fails closed if it is missing: `/api/health` remains available for Railway, but the application, APIs, Square callback, and webhook processing return `503 AUTH_CONFIGURATION_REQUIRED`. `BAKERYOPS_USER` defaults to `owner`. Use a unique strong password stored only in Railway variables; credentials are never written to logs.
+
+Local development remains usable without a password. Set `BAKERYOPS_PASSWORD` locally when you want to test the same HTTP Basic authentication used in production.
+
 ## Storage
 
 BakeryOps uses storage according to the runtime environment:

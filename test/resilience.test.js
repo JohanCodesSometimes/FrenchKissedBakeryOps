@@ -91,7 +91,8 @@ test("HTTP health stays available while production database bootstrap retries", 
   assert.equal(health.body.ok, true);
   assert.equal(health.body.database.ready, false);
 
-  const dashboard = await getJson(port, "/api/dashboard");
+  const authorization = `Basic ${Buffer.from("owner:test-password").toString("base64")}`;
+  const dashboard = await getJson(port, "/api/dashboard", { Authorization: authorization });
   assert.equal(dashboard.status, 503);
   assert.equal(dashboard.body.error.code, "DATABASE_UNAVAILABLE");
   assert.equal(dashboard.body.error.retryable, true);
@@ -116,9 +117,9 @@ function waitForPort(child) {
   });
 }
 
-function getJson(port, pathname) {
+function getJson(port, pathname, headers = {}) {
   return new Promise((resolve, reject) => {
-    const request = http.get({ hostname: "127.0.0.1", port, path: pathname }, (response) => {
+    const request = http.get({ hostname: "127.0.0.1", port, path: pathname, headers }, (response) => {
       const chunks = [];
       response.on("data", (chunk) => chunks.push(chunk));
       response.on("end", () => {

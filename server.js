@@ -2,6 +2,7 @@ const http = require("http");
 const fs = require("fs");
 const path = require("path");
 const crypto = require("crypto");
+const { createAuthPolicy } = require("./authentication");
 const { createStorage } = require("./storage");
 const { createSquareService } = require("./square");
 const { createReceiptParser } = require("./receipt-parser");
@@ -21,8 +22,7 @@ const {
 const root = __dirname;
 const port = Number(process.env.PORT || 4173);
 const host = process.env.HOST || "0.0.0.0";
-const username = process.env.BAKERYOPS_USER || "owner";
-const password = process.env.BAKERYOPS_PASSWORD;
+const authPolicy = createAuthPolicy(process.env);
 const dataDir = path.resolve(process.env.DATA_DIR || path.join(root, "data"));
 const collectionNames = ["expenses", "inventory", "recipes", "sales"];
 const requestTimeoutMs = 30_000;
@@ -135,7 +135,21 @@ function startServer() {
             attempts: recovery.attempts,
             retryAt: recovery.retryAt || null,
           },
+          authentication: {
+            required: authPolicy.required,
+            configured: authPolicy.configured,
+          },
         }, noStoreHeaders());
+      }
+
+      if (authPolicy.required && !authPolicy.configured) {
+        return sendAuthenticationUnavailable(res);
+      }
+
+      const independentlyAuthenticatedSquareRoute =
+        url.pathname === "/api/square/webhook" || url.pathname === "/api/square/oauth/callback";
+      if (!independentlyAuthenticatedSquareRoute && !authPolicy.isAuthorized(req)) {
+        return requireLogin(res);
       }
 
       if (url.pathname.startsWith("/api/") && !applicationReady) {
@@ -179,8 +193,6 @@ function startServer() {
         }
         return sendJson(res, 200, result);
       }
-
-      if (password && !isAuthorized(req)) return requireLogin(res);
 
       if (url.pathname === "/api/square/status" && req.method === "GET") {
         return sendJson(res, 200, squareService.status());
@@ -364,7 +376,11 @@ function startServer() {
   httpServer.listen(port, host, () => {
     const address = httpServer.address();
     console.log(`BakeryOps AI running on ${host}:${address?.port || port}`);
-    if (!password) console.log("Set BAKERYOPS_PASSWORD to require a login before sharing.");
+    if (authPolicy.production && !authPolicy.configured) {
+      console.error("[auth] Production access is disabled until BAKERYOPS_PASSWORD is configured.");
+    } else if (!authPolicy.required) {
+      console.log("[auth] Local development authentication is disabled.");
+    }
   });
 }
 
@@ -387,6 +403,16 @@ function sendDatabaseUnavailable(res) {
       retryAt: recovery.retryAt || null,
     },
   }, { ...noStoreHeaders(), "Retry-After": String(retrySeconds) });
+}
+
+function sendAuthenticationUnavailable(res) {
+  return sendJson(res, 503, {
+    error: {
+      code: "AUTH_CONFIGURATION_REQUIRED",
+      message: "Production authentication is not configured.",
+      retryable: false,
+    },
+  }, noStoreHeaders());
 }
 
 function isDatabaseFailure(error) {
@@ -1199,17 +1225,11 @@ function serveStatic(pathname, res) {
   });
 }
 
-function isAuthorized(req) {
-  const header = req.headers.authorization || "";
-  const [scheme, encoded] = header.split(" ");
-  if (scheme !== "Basic" || !encoded) return false;
-  return Buffer.from(encoded, "base64").toString("utf8") === `${username}:${password}`;
-}
-
 function requireLogin(res) {
   res.writeHead(401, {
     "WWW-Authenticate": 'Basic realm="BakeryOps AI"',
     "Content-Type": "text/plain; charset=utf-8",
+    ...noStoreHeaders(),
   });
   res.end("Authentication required");
 }
