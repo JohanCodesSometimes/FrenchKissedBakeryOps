@@ -42,7 +42,7 @@
 
         <section class="page-view active" id="dashboard-view">
           <article class="panel sales-summary-panel">
-            <div class="panel-header"><div><p class="eyebrow">Live sales</p><h2>Sales Summary</h2></div><small id="sales-refreshed-at">Refreshing every 30 seconds</small></div>
+            <div class="panel-header"><div><p class="eyebrow">Live sales</p><h2>Sales Summary</h2></div><div class="live-sales-state"><span class="status-badge reconnecting" id="sales-connection-status" role="status">Reconnecting</span><button class="ghost-button compact-button" id="sales-retry" type="button">Retry</button><small id="sales-refreshed-at">Connecting to live sales</small></div></div>
             <div class="metrics-grid sales-summary-grid">
               <div class="summary-metric"><span>Today's sales</span><strong id="summary-today">$0.00</strong></div>
               <div class="summary-metric"><span>This week's sales</span><strong id="summary-week">$0.00</strong></div>
@@ -247,8 +247,8 @@
 
     <dialog id="recipe-detail-dialog" class="large-dialog"><div class="entry-form"><div class="dialog-header"><div><p class="eyebrow">Recipe details</p><h2 id="recipe-detail-title"></h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button></div><div id="recipe-detail-content"></div></div></dialog>
 
-    <script src="live-sales.js?v=2026-06-27-live-sales"></script>
-    <script src="script.js?v=2026-06-27-live-sales"></script>
+    <script src="live-sales.js?v=2026-07-18-live-sales-recovery"></script>
+    <script src="script.js?v=2026-07-18-live-sales-recovery"></script>
     <script src="/square-connect-fix.js?v=final-square-oauth-2026-06-23-1"></script>
   </body>
 </html>

@@ -39,5 +39,103 @@
     return String(sale.soldAt || sale.updatedAt || sale.createdAt || sale.date || "");
   }
 
-  return { mergeSales };
+  function boundedBackoffDelay(failureCount, {
+    baseDelay = 12_000,
+    maxDelay = 60_000,
+    jitterRatio = 0.2,
+    random = Math.random,
+  } = {}) {
+    const exponent = Math.max(0, Number(failureCount || 1) - 1);
+    const exponential = Math.min(maxDelay, baseDelay * 2 ** exponent);
+    const jitter = exponential * Math.max(0, jitterRatio) * Math.max(0, Math.min(1, random()));
+    return Math.min(maxDelay, Math.round(exponential + jitter));
+  }
+
+  function createPollController({
+    poll,
+    onStatus = () => {},
+    setTimer = setTimeout,
+    clearTimer = clearTimeout,
+    random = Math.random,
+    baseDelay = 12_000,
+    maxDelay = 60_000,
+    offlineThreshold = 3,
+  }) {
+    if (typeof poll !== "function") throw new TypeError("poll must be a function");
+    let timer = null;
+    let currentPoll = null;
+    let stopped = true;
+    let failures = 0;
+
+    function clearScheduledPoll() {
+      if (timer === null) return;
+      clearTimer(timer);
+      timer = null;
+    }
+
+    function schedule(delay) {
+      if (stopped) return;
+      clearScheduledPoll();
+      timer = setTimer(() => {
+        timer = null;
+        void run();
+      }, delay);
+    }
+
+    function run() {
+      if (stopped) return Promise.resolve(false);
+      if (currentPoll) return currentPoll;
+      currentPoll = (async () => {
+        try {
+          await poll();
+          failures = 0;
+          onStatus({ state: "live", failures, nextDelay: baseDelay });
+          schedule(baseDelay);
+          return true;
+        } catch (error) {
+          failures += 1;
+          const nextDelay = boundedBackoffDelay(failures, { baseDelay, maxDelay, random });
+          onStatus({
+            state: failures >= offlineThreshold ? "offline" : "reconnecting",
+            failures,
+            nextDelay,
+            error,
+          });
+          schedule(nextDelay);
+          return false;
+        } finally {
+          currentPoll = null;
+        }
+      })();
+      return currentPoll;
+    }
+
+    function start({ immediate = false } = {}) {
+      stopped = false;
+      if (timer !== null || currentPoll) return currentPoll || Promise.resolve(false);
+      if (immediate) return run();
+      schedule(baseDelay);
+      return Promise.resolve(true);
+    }
+
+    function stop() {
+      stopped = true;
+      clearScheduledPoll();
+    }
+
+    function retry() {
+      stopped = false;
+      clearScheduledPoll();
+      onStatus({ state: "reconnecting", failures, nextDelay: 0 });
+      return run();
+    }
+
+    function state() {
+      return { failures, inFlight: Boolean(currentPoll), scheduled: timer !== null, stopped };
+    }
+
+    return { retry, run, start, state, stop };
+  }
+
+  return { boundedBackoffDelay, createPollController, mergeSales };
 }));

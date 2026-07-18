@@ -123,7 +123,8 @@ Writes use a temporary file and rename step. Existing records from the previous 
 - Persistent activity log
 - Owner settings for business name and shopping target quantity
 - Square OAuth connection, signed webhooks, completed-payment sales sync, and duplicate prevention
-- Lightweight 12-second sales polling that updates dashboard KPIs, charts, and tables without reloading
+- Lightweight 12-second sales polling that updates dashboard KPIs, charts, tables, inventory, customer intelligence, and purchasing forecasts without reloading
+- Live, Reconnecting, and Offline status with manual retry, visibility recovery, overlap prevention, and capped exponential backoff
 - OpenAI Vision receipt extraction with editable review and approval
 
 ## Cost Conversions

@@ -314,7 +314,7 @@ test("Square connect final handler is isolated from cached script.js", () => {
   const fix = fs.readFileSync(path.join(root, "square-connect-fix.js"), "utf8");
   assert.match(html, /id="square-connect" type="button"/);
   assert.match(html, /Square UI build final-square-oauth-2026-06-23-1/);
-  const scriptIndex = html.indexOf('<script src="script.js?v=2026-06-27-live-sales"></script>');
+  const scriptIndex = html.indexOf('<script src="script.js?v=2026-07-18-live-sales-recovery"></script>');
   const fixIndex = html.indexOf('<script src="/square-connect-fix.js?v=final-square-oauth-2026-06-23-1"></script>');
   assert.ok(scriptIndex >= 0, "script.js must be loaded");
   assert.ok(fixIndex > scriptIndex, "square-connect-fix.js must load after script.js");

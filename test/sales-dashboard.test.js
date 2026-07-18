@@ -82,6 +82,6 @@ test("sales summary and history provide a graceful empty state", () => {
   const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
   assert.match(html, /id="dashboard-sales-history"/);
   assert.match(html, /<th>Tax<\/th><th>Discount<\/th><th>Source<\/th>/);
-  assert.match(script, /window\.setInterval\(pollSalesUpdates, SALES_POLL_INTERVAL_MS\)/);
+  assert.match(script, /BakeryLiveSales\.createPollController/);
   assert.match(script, /tableEmpty\(columns, "No sales recorded yet"/);
 });

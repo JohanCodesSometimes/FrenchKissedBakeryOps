@@ -933,6 +933,7 @@ function buildSalesUpdatePayload(sales, cursor) {
   const summary = buildSalesSummary(collections.sales, now);
   const monthKey = localDateKey(now).slice(0, 7);
   const monthExpenses = collections.expenses.filter((expense) => expense.date.startsWith(monthKey));
+  const inventory = buildInventoryIntelligence(collections.inventory);
   return {
     ...payload,
     salesSummary: summary,
@@ -944,6 +945,10 @@ function buildSalesUpdatePayload(sales, cursor) {
     },
     salesCount: collections.sales.length,
     productPerformance: buildProductPerformance(),
+    inventory: { ...inventory, alerts: inventory.summary.lowStockCount },
+    customers: customers.map(toSafeCustomer),
+    customerInsights: buildCustomerInsights(customers, now),
+    purchasingIntelligence: buildPurchasingDashboard(),
   };
 }
 

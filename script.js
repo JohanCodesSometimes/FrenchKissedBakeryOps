@@ -9,6 +9,7 @@ const unitOptions = ["lb", "oz", "g", "kg", "count", "dozen", "gallon"];
 const receiptUnitOptions = [...unitOptions, "unknown"];
 const SALES_POLL_INTERVAL_MS = 12_000;
 const SALES_POLL_OVERLAP_MS = 60_000;
+const SALES_POLL_MAX_BACKOFF_MS = 60_000;
 
 let appData = null;
 let appSettings = null;
@@ -19,9 +20,13 @@ let customersData = [];
 let customerInsights = null;
 let activeView = "dashboard-view";
 let dashboardRefreshInFlight = false;
-let salesPollingInFlight = false;
-let salesPollingTimer = null;
 let salesCursor = "";
+const salesPollController = BakeryLiveSales.createPollController({
+  poll: pollSalesUpdates,
+  onStatus: renderLiveSalesStatus,
+  baseDelay: SALES_POLL_INTERVAL_MS,
+  maxDelay: SALES_POLL_MAX_BACKOFF_MS,
+});
 
 const viewConfig = {
   "dashboard-view": { title: "Dashboard", action: "Add Sale", dialog: "sale-dialog" },
@@ -50,11 +55,11 @@ async function initialize() {
   document.querySelector("#report-month").value = localDateKey(new Date()).slice(0, 7);
   bindEvents();
   await refreshAllData();
-  startLiveSalesPolling();
+  salesPollController.start({ immediate: !appData });
   window.setInterval(refreshCustomers, 30_000);
   document.addEventListener("visibilitychange", handleSalesVisibility);
-  window.addEventListener("pagehide", stopLiveSalesPolling);
-  window.addEventListener("pageshow", startLiveSalesPolling);
+  window.addEventListener("pagehide", () => salesPollController.stop());
+  window.addEventListener("pageshow", retryLiveSales);
 }
 
 function bindEvents() {
@@ -65,6 +70,7 @@ function bindEvents() {
   document.querySelector("#report-month").addEventListener("change", refreshReport);
   document.querySelector("#refresh-shopping").addEventListener("click", refreshShoppingList);
   document.querySelector("#refresh-customers").addEventListener("click", refreshCustomers);
+  document.querySelector("#sales-retry").addEventListener("click", retryLiveSales);
   document.querySelector("#customer-sort").addEventListener("change", refreshCustomers);
   document.querySelector("#settings-form").addEventListener("submit", saveSettings);
   document.querySelector("#square-disconnect").addEventListener("click", disconnectSquare);
@@ -475,53 +481,78 @@ async function disconnectSquare() {
   }
 }
 
-function startLiveSalesPolling() {
-  if (salesPollingTimer || !appData || document.hidden) return;
-  salesPollingTimer = window.setInterval(pollSalesUpdates, SALES_POLL_INTERVAL_MS);
-}
-
-function stopLiveSalesPolling() {
-  if (!salesPollingTimer) return;
-  window.clearInterval(salesPollingTimer);
-  salesPollingTimer = null;
-}
-
 function handleSalesVisibility() {
-  if (document.hidden) return stopLiveSalesPolling();
-  startLiveSalesPolling();
-  pollSalesUpdates();
+  if (document.hidden) return salesPollController.stop();
+  retryLiveSales();
+}
+
+function retryLiveSales() {
+  if (document.hidden) return;
+  void salesPollController.retry();
 }
 
 async function pollSalesUpdates() {
-  if (salesPollingInFlight || document.hidden || !appData || !salesCursor) return;
-  salesPollingInFlight = true;
-  try {
-    const pollSince = new Date(Date.parse(salesCursor) - SALES_POLL_OVERLAP_MS).toISOString();
-    const response = await fetch(`/api/sales/updates?since=${encodeURIComponent(pollSince)}`, {
-      credentials: "same-origin",
-      cache: "no-store",
-    });
-    if (!response.ok) throw new Error("Sales polling failed");
-    const update = await response.json();
-    salesCursor = update.cursor || salesCursor;
-    if (!update.sales?.length) return;
+  if (document.hidden) return;
+  if (!appData || !salesCursor) {
+    if (!await refreshDashboard({ showError: false })) throw new Error("Dashboard recovery failed");
+    return;
+  }
+  const pollSince = new Date(Date.parse(salesCursor) - SALES_POLL_OVERLAP_MS).toISOString();
+  const response = await fetch(`/api/sales/updates?since=${encodeURIComponent(pollSince)}`, {
+    credentials: "same-origin",
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(`Sales polling failed (${response.status})`);
+  const update = await response.json();
+  salesCursor = update.cursor || salesCursor;
+  if (!update.sales?.length) return;
 
-    const merged = BakeryLiveSales.mergeSales(appData.sales, update.sales);
-    if (!merged.changed) return;
-    appData.sales = merged.sales;
-    appData.salesSummary = update.salesSummary;
-    Object.assign(appData.financials, update.financials);
-    appData.counts.sales = update.salesCount;
-    appData.productPerformance = update.productPerformance;
-    appData.updatedAt = update.cursor;
-    renderSalesDependentViews();
-  } catch {
-    console.warn("[sales-poll] update failed");
-  } finally {
-    salesPollingInFlight = false;
+  const merged = BakeryLiveSales.mergeSales(appData.sales, update.sales);
+  if (!merged.changed) return;
+  appData.sales = merged.sales;
+  appData.salesSummary = update.salesSummary;
+  Object.assign(appData.financials, update.financials);
+  appData.counts.sales = update.salesCount;
+  appData.productPerformance = update.productPerformance;
+  appData.updatedAt = update.cursor;
+  if (update.inventory) appData.inventory = update.inventory;
+  if (update.customers) {
+    customersData = sortCustomerRows(update.customers);
+    customerInsights = update.customerInsights;
+  }
+  renderDashboard();
+  if (update.inventory) renderInventory();
+  if (update.customers) renderCustomers();
+  if (update.purchasingIntelligence) renderShoppingList(update.purchasingIntelligence);
+}
+
+function renderLiveSalesStatus({ state, failures = 0, nextDelay = SALES_POLL_INTERVAL_MS }) {
+  const badge = document.querySelector("#sales-connection-status");
+  const retry = document.querySelector("#sales-retry");
+  if (!badge || !retry) return;
+  badge.textContent = state === "live" ? "Live" : state === "offline" ? "Offline" : "Reconnecting";
+  badge.className = `status-badge ${state}`;
+  retry.hidden = state === "live";
+  retry.disabled = state === "reconnecting" && nextDelay === 0;
+  if (state !== "live") {
+    const seconds = Math.max(1, Math.ceil(nextDelay / 1000));
+    setText(
+      "#sales-refreshed-at",
+      state === "offline"
+        ? `Offline after ${failures} attempts - retrying in ${seconds}s`
+        : `Reconnecting - retrying in ${seconds}s`,
+    );
   }
 }
-async function refreshDashboard() {
+
+function sortCustomerRows(rows) {
+  const sort = document.querySelector("#customer-sort")?.value || "latestPurchase";
+  return [...rows].sort((left, right) => sort === "totalSpend"
+    ? Number(right.totalSpend || 0) - Number(left.totalSpend || 0)
+    : String(right.latestPurchaseDate || "").localeCompare(String(left.latestPurchaseDate || "")));
+}
+
+async function refreshDashboard({ showError = true } = {}) {
   if (dashboardRefreshInFlight || document.hidden) return;
   dashboardRefreshInFlight = true;
   try {
@@ -530,8 +561,11 @@ async function refreshDashboard() {
     appData = await response.json();
     salesCursor = appData.salesCursor || appData.updatedAt || salesCursor;
     renderAll();
+    renderLiveSalesStatus({ state: "live" });
+    return true;
   } catch (error) {
-    showNotice(error.message, "error");
+    if (showError) showNotice(error.message, "error");
+    return false;
   } finally {
     dashboardRefreshInFlight = false;
   }
@@ -1053,47 +1087,49 @@ async function refreshShoppingList() {
   try {
     const response = await fetch("/api/purchasing-intelligence", { cache: "no-store" });
     if (!response.ok) throw new Error("Could not load purchasing forecast");
-    const data = await response.json();
-
-    setText("#forecast-inventory-value", money.format(data.forecast.inventoryValue));
-    setText("#forecast-running-out", numberFormat.format(data.forecast.ingredientsRunningOutThisWeek));
-    setText("#forecast-reorder-cost", money.format(data.forecast.estimatedReorderCost));
-    setText(
-      "#forecast-restock-days",
-      data.forecast.projectedDaysUntilRestockRequired === null
-        ? "Not enough data"
-        : `${numberFormat.format(data.forecast.projectedDaysUntilRestockRequired)} days`,
-    );
-    setText("#trend-monthly-spending", money.format(data.costTrends.monthlyIngredientSpending));
-    setText("#trend-next-order", money.format(data.costTrends.estimatedNextOrderCost));
-    renderCostTrend("#trend-biggest-increase", "#trend-biggest-increase-detail", data.costTrends.biggestPriceIncrease);
-    renderCostTrend("#trend-biggest-decrease", "#trend-biggest-decrease-detail", data.costTrends.biggestPriceDecrease);
-
-    const reorderBody = document.querySelector("#reorder-recommendations-body");
-    reorderBody.innerHTML = data.reorderRecommendations.length
-      ? data.reorderRecommendations.map((item) => `<tr>
-          <td><strong>${escapeHtml(item.ingredientName)}</strong></td>
-          <td>${numberFormat.format(item.currentQuantity)} ${escapeHtml(item.unit)}</td>
-          <td>${item.estimatedDailyUsage > 0 ? `${numberFormat.format(item.estimatedDailyUsage)} ${escapeHtml(item.unit)} / day` : "Not enough data"}</td>
-          <td>${item.estimatedDaysRemaining === null ? "Not enough data" : `${numberFormat.format(item.estimatedDaysRemaining)} days`}</td>
-          <td>${numberFormat.format(item.recommendedReorderQuantity)} ${escapeHtml(item.unit)}</td>
-          <td>${urgencyBadge(item.urgency)}</td>
-        </tr>`).join("")
-      : tableEmpty(6, "No inventory to forecast yet", "Add inventory, recipes, and Square sales to generate recommendations.");
-
-    const historyBody = document.querySelector("#supplier-price-history-body");
-    historyBody.innerHTML = data.supplierPriceHistory.length
-      ? data.supplierPriceHistory.map((item) => `<tr>
-          <td><strong>${escapeHtml(item.ingredientName)}</strong></td>
-          <td>${escapeHtml(item.supplier)}</td>
-          <td>${item.previousPrice === null ? "No previous price" : money.format(item.previousPrice)}</td>
-          <td>${money.format(item.currentPrice)}</td>
-          <td>${item.percentChange === null ? "Not enough history" : formatPercentChange(item.percentChange)}</td>
-        </tr>`).join("")
-      : tableEmpty(5, "No supplier price history yet", "Receipt approvals and inventory price updates will appear here.");
+    renderShoppingList(await response.json());
   } catch (error) {
     showNotice(error.message, "error");
   }
+}
+
+function renderShoppingList(data) {
+  setText("#forecast-inventory-value", money.format(data.forecast.inventoryValue));
+  setText("#forecast-running-out", numberFormat.format(data.forecast.ingredientsRunningOutThisWeek));
+  setText("#forecast-reorder-cost", money.format(data.forecast.estimatedReorderCost));
+  setText(
+    "#forecast-restock-days",
+    data.forecast.projectedDaysUntilRestockRequired === null
+      ? "Not enough data"
+      : `${numberFormat.format(data.forecast.projectedDaysUntilRestockRequired)} days`,
+  );
+  setText("#trend-monthly-spending", money.format(data.costTrends.monthlyIngredientSpending));
+  setText("#trend-next-order", money.format(data.costTrends.estimatedNextOrderCost));
+  renderCostTrend("#trend-biggest-increase", "#trend-biggest-increase-detail", data.costTrends.biggestPriceIncrease);
+  renderCostTrend("#trend-biggest-decrease", "#trend-biggest-decrease-detail", data.costTrends.biggestPriceDecrease);
+
+  const reorderBody = document.querySelector("#reorder-recommendations-body");
+  reorderBody.innerHTML = data.reorderRecommendations.length
+    ? data.reorderRecommendations.map((item) => `<tr>
+        <td><strong>${escapeHtml(item.ingredientName)}</strong></td>
+        <td>${numberFormat.format(item.currentQuantity)} ${escapeHtml(item.unit)}</td>
+        <td>${item.estimatedDailyUsage > 0 ? `${numberFormat.format(item.estimatedDailyUsage)} ${escapeHtml(item.unit)} / day` : "Not enough data"}</td>
+        <td>${item.estimatedDaysRemaining === null ? "Not enough data" : `${numberFormat.format(item.estimatedDaysRemaining)} days`}</td>
+        <td>${numberFormat.format(item.recommendedReorderQuantity)} ${escapeHtml(item.unit)}</td>
+        <td>${urgencyBadge(item.urgency)}</td>
+      </tr>`).join("")
+    : tableEmpty(6, "No inventory to forecast yet", "Add inventory, recipes, and Square sales to generate recommendations.");
+
+  const historyBody = document.querySelector("#supplier-price-history-body");
+  historyBody.innerHTML = data.supplierPriceHistory.length
+    ? data.supplierPriceHistory.map((item) => `<tr>
+        <td><strong>${escapeHtml(item.ingredientName)}</strong></td>
+        <td>${escapeHtml(item.supplier)}</td>
+        <td>${item.previousPrice === null ? "No previous price" : money.format(item.previousPrice)}</td>
+        <td>${money.format(item.currentPrice)}</td>
+        <td>${item.percentChange === null ? "Not enough history" : formatPercentChange(item.percentChange)}</td>
+      </tr>`).join("")
+    : tableEmpty(5, "No supplier price history yet", "Receipt approvals and inventory price updates will appear here.");
 }
 
 function renderCostTrend(valueSelector, detailSelector, trend) {

@@ -1226,6 +1226,39 @@ dialog::backdrop {
   color: var(--success);
 }
 
+.live-sales-state {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.65rem;
+  flex-wrap: wrap;
+}
+
+.live-sales-state small {
+  flex-basis: 100%;
+  text-align: right;
+}
+
+.status-badge.live {
+  background: color-mix(in srgb, var(--success) 14%, transparent);
+  color: var(--success);
+}
+
+.status-badge.reconnecting {
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+}
+
+.status-badge.offline {
+  background: color-mix(in srgb, var(--danger) 14%, transparent);
+  color: var(--danger);
+}
+
+.compact-button {
+  min-height: 2rem;
+  padding: 0.35rem 0.7rem;
+}
+
 .integration-details {
   display: grid;
   gap: 10px;
