@@ -9,6 +9,7 @@ const { buildSalesSummary } = require("./sales-analytics");
 const { applyReceiptItemsToInventory, buildInventoryIntelligence } = require("./inventory-analytics");
 const { calculateRecipeProfitability } = require("./recipe-costing");
 const { buildPurchasingIntelligence } = require("./purchasing-intelligence");
+const { mergeSales } = require("./live-sales");
 const {
   buildCustomerInsights,
   sortCustomers,
@@ -184,6 +185,7 @@ function startServer() {
       }
 
       if (url.pathname === "/api/dashboard" && req.method === "GET") {
+        const salesCursor = new Date().toISOString();
         const [liveSales, liveInventory] = await Promise.all([
           storage.loadCollection("sales"),
           storage.loadCollection("inventory"),
@@ -191,7 +193,15 @@ function startServer() {
         collections.sales = liveSales.map((item) => migrateRecord("sales", item));
         collections.inventory = liveInventory.map((item) => migrateRecord("inventory", item));
         console.log(`[square-test] dashboard sale count: ${collections.sales.length}`);
-        return sendJson(res, 200, buildDashboard(), noStoreHeaders());
+        return sendJson(res, 200, { ...buildDashboard(), salesCursor }, noStoreHeaders());
+      }
+
+      if (url.pathname === "/api/sales/updates" && req.method === "GET") {
+        const since = normalizeSalesCursor(url.searchParams.get("since"));
+        const cursor = new Date().toISOString();
+        const updates = (await storage.loadSalesSince(since)).map((item) => migrateRecord("sales", item));
+        collections.sales = mergeSales(collections.sales, updates).sales;
+        return sendJson(res, 200, buildSalesUpdatePayload(updates, cursor), noStoreHeaders());
       }
 
       if (url.pathname === "/api/settings" && req.method === "GET") {
@@ -916,6 +926,32 @@ function buildDashboard() {
   };
 }
 
+function buildSalesUpdatePayload(sales, cursor) {
+  const payload = { sales, cursor };
+  if (!sales.length) return payload;
+  const now = new Date();
+  const summary = buildSalesSummary(collections.sales, now);
+  const monthKey = localDateKey(now).slice(0, 7);
+  const monthExpenses = collections.expenses.filter((expense) => expense.date.startsWith(monthKey));
+  return {
+    ...payload,
+    salesSummary: summary,
+    financials: {
+      revenueToday: summary.todaySales,
+      revenueThisWeek: summary.weekSales,
+      revenueThisMonth: summary.monthSales,
+      estimatedProfit: round(summary.monthSales - sum(monthExpenses, "amount")),
+    },
+    salesCount: collections.sales.length,
+    productPerformance: buildProductPerformance(),
+  };
+}
+
+function normalizeSalesCursor(value) {
+  const timestamp = Date.parse(value || "");
+  if (!Number.isFinite(timestamp)) throw validationError("A valid sales cursor is required");
+  return new Date(timestamp).toISOString();
+}
 function buildProductPerformance() {
   const totals = new Map();
   for (const sale of collections.sales) {
@@ -1039,6 +1075,7 @@ function serveStatic(pathname, res) {
     path.join(root, "index.html"),
     path.join(root, "styles.css"),
     path.join(root, "script.js"),
+    path.join(root, "live-sales.js"),
     path.join(root, "square-connect-fix.js"),
   ]);
   if (!allowedFiles.has(filePath)) {

@@ -123,6 +123,7 @@ Writes use a temporary file and rename step. Existing records from the previous 
 - Persistent activity log
 - Owner settings for business name and shopping target quantity
 - Square OAuth connection, signed webhooks, completed-payment sales sync, and duplicate prevention
+- Lightweight 12-second sales polling that updates dashboard KPIs, charts, and tables without reloading
 - OpenAI Vision receipt extraction with editable review and approval
 
 ## Cost Conversions
@@ -148,3 +149,10 @@ Dates use `YYYY-MM-DD`. Import is limited to 1,000 rows per file. Invalid rows a
 ## Backup
 
 `GET /api/backup.json` downloads settings and all stored operational data as one timestamped JSON file.
+
+## Next Phase: Production Planning
+
+The next recommended feature is demand-driven production planning. It should combine recent product sales,
+recipe yields, and current inventory to suggest daily bake quantities and flag ingredient constraints. The
+existing sales polling, recipe costing, and inventory modules provide the required inputs; implementation
+should remain advisory first, with no automatic inventory or purchasing mutations.

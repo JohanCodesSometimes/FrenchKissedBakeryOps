@@ -7,6 +7,8 @@ const money = new Intl.NumberFormat("en-US", {
 const numberFormat = new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 });
 const unitOptions = ["lb", "oz", "g", "kg", "count", "dozen", "gallon"];
 const receiptUnitOptions = [...unitOptions, "unknown"];
+const SALES_POLL_INTERVAL_MS = 12_000;
+const SALES_POLL_OVERLAP_MS = 60_000;
 
 let appData = null;
 let appSettings = null;
@@ -17,6 +19,9 @@ let customersData = [];
 let customerInsights = null;
 let activeView = "dashboard-view";
 let dashboardRefreshInFlight = false;
+let salesPollingInFlight = false;
+let salesPollingTimer = null;
+let salesCursor = "";
 
 const viewConfig = {
   "dashboard-view": { title: "Dashboard", action: "Add Sale", dialog: "sale-dialog" },
@@ -45,8 +50,11 @@ async function initialize() {
   document.querySelector("#report-month").value = localDateKey(new Date()).slice(0, 7);
   bindEvents();
   await refreshAllData();
-  window.setInterval(refreshDashboard, 30_000);
+  startLiveSalesPolling();
   window.setInterval(refreshCustomers, 30_000);
+  document.addEventListener("visibilitychange", handleSalesVisibility);
+  window.addEventListener("pagehide", stopLiveSalesPolling);
+  window.addEventListener("pageshow", startLiveSalesPolling);
 }
 
 function bindEvents() {
@@ -467,6 +475,52 @@ async function disconnectSquare() {
   }
 }
 
+function startLiveSalesPolling() {
+  if (salesPollingTimer || !appData || document.hidden) return;
+  salesPollingTimer = window.setInterval(pollSalesUpdates, SALES_POLL_INTERVAL_MS);
+}
+
+function stopLiveSalesPolling() {
+  if (!salesPollingTimer) return;
+  window.clearInterval(salesPollingTimer);
+  salesPollingTimer = null;
+}
+
+function handleSalesVisibility() {
+  if (document.hidden) return stopLiveSalesPolling();
+  startLiveSalesPolling();
+  pollSalesUpdates();
+}
+
+async function pollSalesUpdates() {
+  if (salesPollingInFlight || document.hidden || !appData || !salesCursor) return;
+  salesPollingInFlight = true;
+  try {
+    const pollSince = new Date(Date.parse(salesCursor) - SALES_POLL_OVERLAP_MS).toISOString();
+    const response = await fetch(`/api/sales/updates?since=${encodeURIComponent(pollSince)}`, {
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error("Sales polling failed");
+    const update = await response.json();
+    salesCursor = update.cursor || salesCursor;
+    if (!update.sales?.length) return;
+
+    const merged = BakeryLiveSales.mergeSales(appData.sales, update.sales);
+    if (!merged.changed) return;
+    appData.sales = merged.sales;
+    appData.salesSummary = update.salesSummary;
+    Object.assign(appData.financials, update.financials);
+    appData.counts.sales = update.salesCount;
+    appData.productPerformance = update.productPerformance;
+    appData.updatedAt = update.cursor;
+    renderSalesDependentViews();
+  } catch {
+    console.warn("[sales-poll] update failed");
+  } finally {
+    salesPollingInFlight = false;
+  }
+}
 async function refreshDashboard() {
   if (dashboardRefreshInFlight || document.hidden) return;
   dashboardRefreshInFlight = true;
@@ -474,6 +528,7 @@ async function refreshDashboard() {
     const response = await fetch("/api/dashboard", { credentials: "same-origin", cache: "no-store" });
     if (!response.ok) throw new Error("Could not load dashboard data");
     appData = await response.json();
+    salesCursor = appData.salesCursor || appData.updatedAt || salesCursor;
     renderAll();
   } catch (error) {
     showNotice(error.message, "error");
@@ -487,35 +542,12 @@ function renderAll() {
   renderExpenses();
   renderInventory();
   renderRecipes();
-  renderSales();
 }
 
 function renderDashboard() {
-  const financials = appData.financials;
-  const summary = appData.salesSummary;
-  setText("#summary-today", money.format(summary.todaySales));
-  setText("#summary-week", money.format(summary.weekSales));
-  setText("#summary-month", money.format(summary.monthSales));
-  setText("#summary-average", money.format(summary.averageTicket));
-  setText("#summary-transactions", numberFormat.format(summary.totalTransactions));
-  setText("#sales-refreshed-at", `Updated ${formatDateTime(appData.updatedAt)} - refreshes every 30 seconds`);
-  renderSalesHistory("#dashboard-sales-history", 7, false);
-  setText("#revenue-today", money.format(financials.revenueToday));
-  setText("#revenue-month", money.format(financials.revenueThisMonth));
-  setText("#expenses-month", money.format(financials.expensesThisMonth));
-  setText("#estimated-profit", money.format(financials.estimatedProfit));
+  renderSalesDependentViews();
+  setText("#expenses-month", money.format(appData.financials.expensesThisMonth));
   setText("#low-stock-count", appData.inventory.alerts);
-  renderSalesChart(appData.sales);
-
-  renderCompactList(
-    "#top-products",
-    appData.productPerformance.slice(0, 5).map((item) => ({
-      title: item.product,
-      detail: `${numberFormat.format(item.quantitySold)} sold`,
-      value: money.format(item.revenue),
-    })),
-    "No sales recorded yet",
-  );
   renderCompactList(
     "#low-stock-list",
     appData.inventory.lowStock.slice(0, 5).map((item) => ({
@@ -534,6 +566,31 @@ function renderDashboard() {
     })),
     "No expenses recorded yet",
   );
+}
+
+function renderSalesDependentViews() {
+  const financials = appData.financials;
+  const summary = appData.salesSummary;
+  setText("#summary-today", money.format(summary.todaySales));
+  setText("#summary-week", money.format(summary.weekSales));
+  setText("#summary-month", money.format(summary.monthSales));
+  setText("#summary-average", money.format(summary.averageTicket));
+  setText("#summary-transactions", numberFormat.format(summary.totalTransactions));
+  setText("#sales-refreshed-at", `Updated ${formatDateTime(appData.updatedAt)} - checks every 12 seconds`);
+  renderSalesHistory("#dashboard-sales-history", 7, false);
+  setText("#revenue-today", money.format(financials.revenueToday));
+  setText("#revenue-month", money.format(financials.revenueThisMonth));
+  setText("#estimated-profit", money.format(financials.estimatedProfit));
+  renderSalesChart(appData.sales);
+  renderCompactList(
+    "#top-products",
+    appData.productPerformance.slice(0, 5).map((item) => ({
+      title: item.product,
+      detail: `${numberFormat.format(item.quantitySold)} sold`,
+      value: money.format(item.revenue),
+    })),
+    "No sales recorded yet",
+  );
   renderCompactList(
     "#dashboard-sales",
     appData.sales.slice(0, 5).map((item) => ({
@@ -543,6 +600,7 @@ function renderDashboard() {
     })),
     "No sales recorded yet",
   );
+  renderSales();
 }
 
 function renderExpenses() {

@@ -69,6 +69,11 @@ function createLocalStorage(dataDir) {
       if (!collectionNames.includes(name)) throw new Error(`Unsupported local collection: ${name}`);
       return loadArray(path.join(resolvedDir, `${name}.json`));
     },
+    async loadSalesSince(since) {
+      return loadArray(path.join(resolvedDir, "sales.json")).filter((sale) =>
+        latestRecordTimestamp(sale) > since,
+      );
+    },
     async loadPriceHistory() {
       return loadArray(path.join(resolvedDir, localFiles.priceHistory));
     },
@@ -163,6 +168,9 @@ function createSupabaseStorage(client) {
       const rows = await selectAll(client, config[0]);
       return rows.map(config[1]);
     },
+    async loadSalesSince(since) {
+      return (await selectSalesSince(client, since)).map(fromSaleRow);
+    },
     async loadPriceHistory() {
       const rows = await selectAll(client, "supplier_prices", "recorded_at", false);
       return rows.filter((row) => row.source === "inventory_history").map(fromSupplierPriceRow);
@@ -228,6 +236,20 @@ async function selectAll(client, table, orderColumn = "created_at", ascending = 
   return data || [];
 }
 
+async function selectSalesSince(client, since) {
+  const filter = `created_at.gt.${since},updated_at.gt.${since}`;
+  const { data, error } = await client
+    .from("sales")
+    .select("*")
+    .or(filter)
+    .order("created_at", { ascending: false });
+  if (error) throw storageError("load sales updates", error);
+  return data || [];
+}
+
+function latestRecordTimestamp(record) {
+  return [record.createdAt, record.updatedAt].filter(Boolean).sort().at(-1) || "";
+}
 async function selectRecipes(client) {
   const { data, error } = await client
     .from("recipes")

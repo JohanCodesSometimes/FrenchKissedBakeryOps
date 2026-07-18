@@ -198,6 +198,8 @@ alter table public.square_connections add column if not exists scopes text;
 create index if not exists expenses_date_idx on public.expenses(date);
 create index if not exists sales_date_idx on public.sales(date);
 create index if not exists sales_source_idx on public.sales(source);
+create index if not exists sales_created_at_idx on public.sales(created_at desc);
+create index if not exists sales_updated_at_idx on public.sales(updated_at desc) where updated_at is not null;
 create unique index if not exists sales_square_order_unique_idx
   on public.sales(square_order_id)
   where square_order_id is not null;
