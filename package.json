@@ -6,6 +6,7 @@
   "scripts": {
     "start": "node server.js",
     "test": "node --test",
+    "seed:trends": "node scripts/seed-demo-trends.js",
     "verify:square-oauth": "node scripts/verify-square-oauth.js"
   },
   "engines": {

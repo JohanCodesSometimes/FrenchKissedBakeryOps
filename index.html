@@ -5,7 +5,8 @@
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="theme-color" content="#0e7c66" />
     <title>BakeryOps AI</title>
-    <link rel="stylesheet" href="styles.css?v=20260623-square-oauth-fresh" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230e7c66'/%3E%3Ctext x='32' y='44' text-anchor='middle' font-size='38' font-family='Arial' font-weight='700' fill='white'%3EB%3C/text%3E%3C/svg%3E" />
+    <link rel="stylesheet" href="styles.css?v=20260720-trend-finder" />
   </head>
   <body>
     <div class="app-shell">
@@ -22,6 +23,7 @@
           <button type="button" data-view-target="recipes-view">Recipes</button>
           <button type="button" data-view-target="sales-view">Sales</button>
           <button type="button" data-view-target="customers-view">Contacts</button>
+          <button type="button" data-view-target="trends-view">Trend Finder</button>
           <button type="button" data-view-target="reports-view">Reports</button>
           <button type="button" data-view-target="shopping-view">Purchasing</button>
           <button type="button" data-view-target="activity-view">Activity</button>
@@ -189,6 +191,30 @@
             <div class="table-wrap"><table><thead><tr><th>Customer</th><th>Email</th><th>Phone</th><th>Total spend</th><th>Visits</th><th>Latest purchase</th><th>Favorite product</th></tr></thead><tbody id="customers-body"><tr><td colspan="7"><div class="empty-state table-empty"><strong>No customers yet</strong><p>Customers will appear when a Square sale includes contact information.</p></div></td></tr></tbody></table></div>
           </article>
         </section>
+
+        <section class="page-view" id="trends-view" hidden>
+          <div class="section-toolbar trend-heading">
+            <div><p class="eyebrow">Food opportunity intelligence</p><h2>Find the next bakery-worthy idea</h2><p class="settings-copy">Trends are manually collected or added through configured providers; they are not live TikTok data.</p></div>
+            <button class="primary-button" id="open-trend-dialog" type="button">Add Trend</button>
+          </div>
+          <section class="metrics-grid trend-summary-grid" aria-label="Trend summary">
+            <article class="metric-card"><span>Active trends</span><strong id="trend-active-count">0</strong><small>Ready to evaluate</small></article>
+            <article class="metric-card"><span>High opportunity</span><strong id="trend-high-count">0</strong><small>Score of 75 or higher</small></article>
+            <article class="metric-card"><span>New this week</span><strong id="trend-new-count">0</strong><small>First seen in 7 days</small></article>
+            <article class="metric-card highlight"><span>Average opportunity</span><strong id="trend-average-score">0</strong><small>Across non-archived trends</small></article>
+          </section>
+          <article class="panel trend-filter-panel">
+            <form id="trend-filters" class="trend-filters">
+              <label class="search-field"><span>Search</span><input name="search" type="search" maxlength="120" placeholder="Title, product, hashtag" /></label>
+              <label class="search-field"><span>Category</span><select name="category"><option value="">All categories</option><option value="pastries">Pastries</option><option value="cakes">Cakes</option><option value="cookies">Cookies</option><option value="drinks">Drinks</option><option value="seasonal">Seasonal</option><option value="packaging">Packaging</option><option value="other">Other</option></select></label>
+              <label class="search-field"><span>Status</span><select name="status"><option value="">All statuses</option><option value="active">Active</option><option value="watching">Watching</option><option value="testing">Testing</option><option value="adopted">Adopted</option><option value="archived">Archived</option></select></label>
+              <label class="search-field"><span>Sort</span><select name="sort"><option value="opportunity">Opportunity</option><option value="recent">Most recent</option><option value="engagement">Engagement</option><option value="relevance">Relevance</option><option value="oldest">Oldest seen</option></select></label>
+            </form>
+          </article>
+          <div id="trend-state" class="panel trend-state" role="status"><div class="empty-state"><strong>Loading trends…</strong><p>Checking your curated opportunity list.</p></div></div>
+          <div id="trend-list" class="trend-card-grid" aria-live="polite" hidden></div>
+        </section>
+
         <section class="page-view" id="reports-view" hidden>
           <div class="section-toolbar"><label class="search-field month-field"><span>Report month</span><input id="report-month" type="month" /></label><button class="secondary-button" id="refresh-report" type="button">Refresh Report</button></div>
           <div class="metrics-grid sales-metrics"><article class="metric-card"><span>Revenue</span><strong id="report-revenue">$0.00</strong></article><article class="metric-card"><span>Expenses</span><strong id="report-expenses">$0.00</strong></article><article class="metric-card highlight"><span>Estimated Profit</span><strong id="report-profit">$0.00</strong></article></div>
@@ -247,8 +273,13 @@
 
     <dialog id="recipe-detail-dialog" class="large-dialog"><div class="entry-form"><div class="dialog-header"><div><p class="eyebrow">Recipe details</p><h2 id="recipe-detail-title"></h2></div><button class="icon-button" type="button" data-close-dialog aria-label="Close">&times;</button></div><div id="recipe-detail-content"></div></div></dialog>
 
+    <dialog id="trend-dialog"><form class="entry-form" id="trend-form"><div class="dialog-header"><div><p class="eyebrow">Manual discovery</p><h2>Add Food Trend</h2></div><button class="icon-button" type="button" data-trend-close aria-label="Close">&times;</button></div><p class="settings-copy">Add what you observed. A pasted URL is stored as a reference; BakeryOps does not extract TikTok data from it.</p><div class="form-grid"><label>Trend Title<input name="title" type="text" maxlength="160" required /></label><label>Category<select name="category" required><option value="pastries">Pastries</option><option value="cakes">Cakes</option><option value="cookies">Cookies</option><option value="drinks">Drinks</option><option value="seasonal">Seasonal</option><option value="packaging">Packaging</option><option value="other">Other</option></select></label><label>Source Platform<input name="sourcePlatform" type="text" maxlength="80" value="TikTok (manually observed)" /></label><label>Source URL<input name="sourceUrl" type="url" maxlength="1000" placeholder="https://www.tiktok.com/…" /></label><label>Hashtags<input name="hashtags" type="text" maxlength="500" placeholder="#bakerytok #pastry" /></label><label>Engagement Signal (0–100)<input name="engagementScore" type="number" min="0" max="100" step="1" value="0" /></label><label class="full-field">Description<textarea name="description" rows="4" maxlength="2000" placeholder="What makes this trend notable?"></textarea></label></div><div class="form-actions"><button class="ghost-button" type="button" data-trend-close>Cancel</button><button class="primary-button" type="submit">Add Trend</button></div></form></dialog>
+
+    <dialog id="trend-recommendation-dialog"><form class="entry-form" id="trend-recommendation-form"><input name="id" type="hidden" /><div class="dialog-header"><div><p class="eyebrow">Owner recommendation</p><h2>Edit Recommendation</h2></div><button class="icon-button" type="button" data-trend-close aria-label="Close">&times;</button></div><div class="form-grid"><label class="full-field">Suggested Product<input name="suggestedProduct" type="text" maxlength="500" /></label><label class="full-field">Suggested Action<textarea name="suggestedAction" rows="4" maxlength="1000"></textarea></label></div><div class="form-actions"><button class="ghost-button" type="button" data-trend-close>Cancel</button><button class="primary-button" type="submit">Save Recommendation</button></div></form></dialog>
+
     <script src="live-sales.js?v=2026-07-18-live-sales-recovery"></script>
     <script src="script.js?v=2026-07-18-live-sales-recovery"></script>
+    <script src="trend-finder-ui.js?v=2026-07-20-trend-finder"></script>
     <script src="/square-connect-fix.js?v=final-square-oauth-2026-06-23-1"></script>
   </body>
 </html>

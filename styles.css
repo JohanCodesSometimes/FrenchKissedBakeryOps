@@ -1388,7 +1388,49 @@ dialog::backdrop {
   border-top: 1px solid var(--line);
 }
 
+.trend-heading .settings-copy { max-width: 760px; margin: 8px 0 0; }
+.trend-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 20px; }
+.trend-filter-panel { margin-bottom: 20px; padding: 18px; }
+.trend-filters { display: grid; grid-template-columns: minmax(220px, 2fr) repeat(3, minmax(140px, 1fr)); gap: 14px; }
+.trend-filters .search-field { margin: 0; }
+.trend-state { min-height: 180px; display: grid; place-items: center; }
+.trend-state[hidden] { display: none; }
+.trend-error strong { color: var(--danger); }
+.trend-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 18px; }
+.trend-card { min-width: 0; padding: 22px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.trend-card-header, .trend-source-row, .trend-actions, .trend-badges, .trend-hashtags { display: flex; align-items: center; gap: 8px; }
+.trend-card-header { align-items: flex-start; justify-content: space-between; gap: 16px; }
+.trend-card-header > div:first-child { min-width: 0; max-width: 100%; }
+.trend-card h3 { margin: 4px 0 0; font-size: 1.2rem; }
+.trend-badges { flex-wrap: wrap; justify-content: flex-end; }
+.trend-origin { background: var(--surface-2); }
+.trend-status-testing, .trend-status-adopted { color: var(--success); }
+.trend-status-archived { color: var(--muted); }
+.trend-description, .trend-source-row, .trend-dates, .trend-recommendation p, .trend-recommendation small { line-height: 1.55; }
+.trend-description { margin: 14px 0 10px; }
+.trend-card h3, .trend-description, .trend-recommendation p { overflow-wrap: anywhere; }
+.trend-source-row { justify-content: space-between; color: var(--muted); font-size: 0.88rem; }
+.trend-source-link { color: var(--accent); font-weight: 700; }
+.trend-hashtags { flex-wrap: wrap; margin: 12px 0; }
+.trend-hashtags span { color: var(--accent); font-size: 0.84rem; font-weight: 700; }
+.trend-scores { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 16px 0; border: 1px solid var(--line); border-radius: 9px; overflow: hidden; }
+.trend-scores div { padding: 12px; border-right: 1px solid var(--line); }
+.trend-scores div:last-child { border-right: 0; }
+.trend-scores dt { color: var(--muted); font-size: 0.76rem; }
+.trend-scores dd { margin: 5px 0 0; font-size: 1rem; font-weight: 800; }
+.trend-scores .opportunity { background: color-mix(in srgb, var(--accent) 10%, var(--surface)); }
+.trend-recommendation { padding: 15px; border-left: 3px solid var(--accent); border-radius: 0 8px 8px 0; background: var(--surface-2); }
+.trend-recommendation p { margin: 7px 0 0; }
+.trend-recommendation .trend-action-copy, .trend-recommendation small { color: var(--muted); }
+.trend-recommendation small { display: block; margin-top: 9px; }
+.trend-dates { margin: 14px 0; color: var(--muted); font-size: 0.82rem; }
+.trend-actions { flex-wrap: wrap; }
+.trend-actions button { min-height: 38px; padding: 8px 11px; }
+.trend-actions .danger { color: var(--danger); }
+
 @media (max-width: 1100px) {
+  .trend-card-grid { grid-template-columns: 1fr; }
+  .trend-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .sales-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1398,12 +1440,13 @@ dialog::backdrop {
     padding: 8px 0;
   }
   .app-shell {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .sidebar {
     position: static;
     height: auto;
+    min-width: 0;
     padding: 16px;
   }
 
@@ -1442,6 +1485,12 @@ dialog::backdrop {
 }
 
 @media (max-width: 700px) {
+  .trend-summary-grid, .trend-filters, .trend-scores { grid-template-columns: 1fr; }
+  .trend-card-header, .trend-source-row { align-items: flex-start; flex-direction: column; }
+  .trend-badges { justify-content: flex-start; }
+  .trend-scores div { border-right: 0; border-bottom: 1px solid var(--line); }
+  .trend-scores div:last-child { border-bottom: 0; }
+  .trend-actions button { flex: 1 1 42%; }
   main {
     padding: 18px;
   }

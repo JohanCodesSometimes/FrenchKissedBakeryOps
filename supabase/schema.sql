@@ -108,6 +108,29 @@ create table if not exists public.trend_reports (
   created_at timestamptz not null default now()
 );
 
+create table if not exists public.food_trends (
+  id uuid primary key default gen_random_uuid(),
+  title text not null check (char_length(title) between 1 and 160),
+  description text not null default '' check (char_length(description) <= 2000),
+  category text not null default 'other' check (category in ('pastries','cakes','cookies','drinks','seasonal','packaging','other')),
+  source_platform text not null default 'Manual curation' check (char_length(source_platform) <= 80),
+  source_url text check (source_url is null or source_url ~* '^https?://'),
+  hashtags jsonb not null default '[]'::jsonb check (jsonb_typeof(hashtags) = 'array'),
+  engagement_score smallint not null default 0 check (engagement_score between 0 and 100),
+  relevance_score smallint not null default 0 check (relevance_score between 0 and 100),
+  opportunity_score smallint not null default 0 check (opportunity_score between 0 and 100),
+  trend_status text not null default 'active' check (trend_status in ('active','watching','testing','adopted','archived')),
+  suggested_product text not null default '' check (char_length(suggested_product) <= 500),
+  suggested_action text not null default '' check (char_length(suggested_action) <= 1000),
+  analysis_reasoning text not null default '' check (char_length(analysis_reasoning) <= 1000),
+  data_origin text not null default 'manual' check (data_origin in ('manual','demo','provider')),
+  first_seen_at timestamptz not null default now(),
+  last_seen_at timestamptz not null default now(),
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  check (last_seen_at >= first_seen_at)
+);
+
 create table if not exists public.activity_log (
   id uuid primary key default gen_random_uuid(),
   action text not null,
@@ -244,6 +267,10 @@ create index if not exists customers_total_spend_idx on public.customers(total_s
 create index if not exists supplier_prices_ingredient_idx on public.supplier_prices(lower(ingredient_name), recorded_at desc);
 create index if not exists activity_log_timestamp_idx on public.activity_log(timestamp desc);
 create index if not exists trend_reports_created_idx on public.trend_reports(created_at desc);
+create index if not exists food_trends_category_idx on public.food_trends(category);
+create index if not exists food_trends_status_idx on public.food_trends(trend_status);
+create index if not exists food_trends_opportunity_idx on public.food_trends(opportunity_score desc);
+create index if not exists food_trends_last_seen_idx on public.food_trends(last_seen_at desc);
 create index if not exists receipt_items_expense_idx on public.receipt_items(expense_id);
 create index if not exists receipt_items_receipt_idx on public.receipt_items(receipt_id);
 create index if not exists receipts_uploaded_idx on public.receipts(uploaded_at desc);
@@ -256,6 +283,7 @@ alter table public.sales enable row level security;
 alter table public.customers enable row level security;
 alter table public.supplier_prices enable row level security;
 alter table public.trend_reports enable row level security;
+alter table public.food_trends enable row level security;
 alter table public.activity_log enable row level security;
 alter table public.settings enable row level security;
 alter table public.square_connections enable row level security;

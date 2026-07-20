@@ -13,6 +13,15 @@ const { buildPurchasingIntelligence } = require("./purchasing-intelligence");
 const { mergeSales } = require("./live-sales");
 const { createRecoveryManager } = require("./resilience");
 const {
+  analyzeTrend,
+  buildTrendSummary,
+  filterAndSortTrends,
+  findDuplicate,
+  normalizeTrendInput,
+  normalizeTrendPatch,
+  parseTrendQuery,
+} = require("./trend-finder");
+const {
   buildCustomerInsights,
   sortCustomers,
   toSafeCustomer,
@@ -290,6 +299,24 @@ function startServer() {
         return sendJson(res, 200, buildCustomerInsights(customers), noStoreHeaders());
       }
 
+      if (url.pathname === "/api/trends" && req.method === "GET") {
+        return await listFoodTrends(url, res);
+      }
+
+      if (url.pathname === "/api/trends" && req.method === "POST") {
+        return await createFoodTrend(req, res);
+      }
+
+      const trendAnalyzeMatch = url.pathname.match(/^\/api\/trends\/([^/]+)\/analyze$/);
+      if (trendAnalyzeMatch && req.method === "POST") {
+        return await analyzeFoodTrend(decodeURIComponent(trendAnalyzeMatch[1]), res);
+      }
+
+      const trendMatch = url.pathname.match(/^\/api\/trends\/([^/]+)$/);
+      if (trendMatch && req.method === "PATCH") {
+        return await updateFoodTrend(decodeURIComponent(trendMatch[1]), req, res);
+      }
+
       if (url.pathname === "/api/price-history" && req.method === "GET") {
         return sendJson(res, 200, priceHistory);
       }
@@ -455,6 +482,62 @@ function latestSquareSale(paymentId, orderId) {
     (paymentId && sale.squarePaymentId === paymentId) ||
     (orderId && sale.squareOrderId === orderId),
   );
+}
+
+async function listFoodTrends(url, res) {
+  const query = parseTrendQuery(url.searchParams);
+  const allTrends = await storage.loadFoodTrends();
+  return sendJson(res, 200, {
+    trends: filterAndSortTrends(allTrends, query),
+    summary: buildTrendSummary(allTrends),
+    sourceDisclosure: "Trends are manually collected or added through configured providers; they are not live TikTok data.",
+  }, noStoreHeaders());
+}
+
+async function createFoodTrend(req, res) {
+  const input = await readJsonBody(req);
+  const now = new Date().toISOString();
+  const trend = normalizeTrendInput(input, { id: crypto.randomUUID(), now, dataOrigin: "manual" });
+  const trends = await storage.loadFoodTrends();
+  if (findDuplicate(trends, trend)) {
+    const error = new Error("A trend with this title or source URL already exists");
+    error.statusCode = 409;
+    throw error;
+  }
+  await storage.upsertFoodTrend(trend);
+  await logActivity("food_trends.created", "A manually curated food trend was added");
+  return sendJson(res, 201, trend, noStoreHeaders());
+}
+
+async function updateFoodTrend(id, req, res) {
+  validateUuid(id);
+  const input = await readJsonBody(req);
+  const trends = await storage.loadFoodTrends();
+  const existing = trends.find((trend) => trend.id === id);
+  if (!existing) return sendJson(res, 404, { error: "Trend not found" });
+  const updated = normalizeTrendPatch(input, existing);
+  await storage.upsertFoodTrend(updated);
+  await logActivity("food_trends.updated", "A food trend was updated");
+  return sendJson(res, 200, updated, noStoreHeaders());
+}
+
+async function analyzeFoodTrend(id, res) {
+  validateUuid(id);
+  const trends = await storage.loadFoodTrends();
+  const existing = trends.find((trend) => trend.id === id);
+  if (!existing) return sendJson(res, 404, { error: "Trend not found" });
+  const inventory = await storage.loadCollection("inventory");
+  const analyzed = analyzeTrend(existing, { inventory });
+  await storage.upsertFoodTrend(analyzed);
+  await logActivity("food_trends.analyzed", "A food trend recommendation was refreshed");
+  return sendJson(res, 200, analyzed, noStoreHeaders());
+}
+
+function validateUuid(value) {
+  if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)) {
+    throw validationError("Trend ID is invalid");
+  }
+  return value;
 }
 
 async function createRecord(collectionName, req, res) {
@@ -1207,6 +1290,7 @@ function serveStatic(pathname, res) {
     path.join(root, "styles.css"),
     path.join(root, "script.js"),
     path.join(root, "live-sales.js"),
+    path.join(root, "trend-finder-ui.js"),
     path.join(root, "square-connect-fix.js"),
   ]);
   if (!allowedFiles.has(filePath)) {

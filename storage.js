@@ -8,6 +8,7 @@ const localFiles = {
   priceHistory: "price-history.json",
   supplierPrices: "supplier-prices.json",
   trendReports: "trend-reports.json",
+  foodTrends: "food-trends.json",
   settings: "settings.json",
   squareConnection: "square-connection.json",
   receiptItems: "receipt-items.json",
@@ -65,6 +66,7 @@ function createLocalStorage(dataDir) {
       ensureJson(path.join(resolvedDir, localFiles.priceHistory), state.priceHistory);
       ensureJson(path.join(resolvedDir, localFiles.supplierPrices), state.supplierPrices);
       ensureJson(path.join(resolvedDir, localFiles.trendReports), state.trendReports);
+      ensureJson(path.join(resolvedDir, localFiles.foodTrends), []);
       ensureJson(path.join(resolvedDir, localFiles.squareConnection), state.squareConnection);
       ensureJson(path.join(resolvedDir, localFiles.receiptItems), state.receiptItems);
       ensureJson(path.join(resolvedDir, localFiles.receipts), state.receipts);
@@ -88,6 +90,18 @@ function createLocalStorage(dataDir) {
     },
     async loadCustomers() {
       return loadArray(path.join(resolvedDir, localFiles.customers));
+    },
+    async loadFoodTrends() {
+      return loadArray(path.join(resolvedDir, localFiles.foodTrends));
+    },
+    async upsertFoodTrend(value) {
+      const filePath = path.join(resolvedDir, localFiles.foodTrends);
+      const trends = loadArray(filePath);
+      const index = trends.findIndex((trend) => trend.id === value.id);
+      if (index === -1) trends.unshift(value);
+      else trends[index] = value;
+      writeJsonAtomic(filePath, trends);
+      return value;
     },
     async saveCollection(name, value) {
       writeJsonAtomic(path.join(resolvedDir, `${name}.json`), value);
@@ -186,6 +200,16 @@ function createSupabaseStorage(client) {
     },
     async loadCustomers() {
       return (await selectCustomers(client)).map(fromCustomerRow);
+    },
+    async loadFoodTrends() {
+      return (await selectFoodTrends(client)).map(fromFoodTrendRow);
+    },
+    async upsertFoodTrend(value) {
+      await assertQuery(
+        client.from("food_trends").upsert(toFoodTrendRow(value), { onConflict: "id" }),
+        "save food trend",
+      );
+      return value;
     },
     async saveCollection(name, value) {
       if (name === "recipes") return syncRecipes(client, value);
@@ -301,6 +325,19 @@ async function selectCustomers(client) {
     return await selectAll(client, "customers", "latest_purchase_date", false);
   } catch (error) {
     if (/customers|schema cache|does not exist/i.test(error.message)) return [];
+    throw error;
+  }
+}
+
+async function selectFoodTrends(client) {
+  try {
+    return await selectAll(client, "food_trends", "last_seen_at", false);
+  } catch (error) {
+    if (/food_trends|schema cache|does not exist/i.test(error.message)) {
+      const missing = new Error("Trend Finder is unavailable until the food_trends migration is applied");
+      missing.statusCode = 503;
+      throw missing;
+    }
     throw error;
   }
 }
@@ -447,6 +484,52 @@ function toTrendReportRow(item) {
 }
 function fromTrendReportRow(row) {
   return { id: row.id, trendName: row.trend_name, whyTrending: row.why_trending, productIdeas: row.product_ideas || [], difficulty: row.difficulty, priceRange: row.price_range, ingredients: row.ingredients || [], productFit: row.product_fit || [], seedKeywords: row.seed_keywords || [], source: row.source, createdAt: row.created_at };
+}
+function toFoodTrendRow(item) {
+  return {
+    id: item.id,
+    title: item.title,
+    description: item.description || "",
+    category: item.category,
+    source_platform: item.sourcePlatform || "Manual curation",
+    source_url: item.sourceUrl || null,
+    hashtags: item.hashtags || [],
+    engagement_score: item.engagementScore || 0,
+    relevance_score: item.relevanceScore || 0,
+    opportunity_score: item.opportunityScore || 0,
+    trend_status: item.trendStatus || "active",
+    suggested_product: item.suggestedProduct || "",
+    suggested_action: item.suggestedAction || "",
+    analysis_reasoning: item.analysisReasoning || "",
+    data_origin: item.dataOrigin || "manual",
+    first_seen_at: item.firstSeenAt,
+    last_seen_at: item.lastSeenAt,
+    created_at: item.createdAt,
+    updated_at: item.updatedAt,
+  };
+}
+function fromFoodTrendRow(row) {
+  return {
+    id: row.id,
+    title: row.title,
+    description: row.description || "",
+    category: row.category,
+    sourcePlatform: row.source_platform || "Manual curation",
+    sourceUrl: row.source_url || "",
+    hashtags: Array.isArray(row.hashtags) ? row.hashtags : [],
+    engagementScore: Number(row.engagement_score || 0),
+    relevanceScore: Number(row.relevance_score || 0),
+    opportunityScore: Number(row.opportunity_score || 0),
+    trendStatus: row.trend_status || "active",
+    suggestedProduct: row.suggested_product || "",
+    suggestedAction: row.suggested_action || "",
+    analysisReasoning: row.analysis_reasoning || "",
+    dataOrigin: row.data_origin || "manual",
+    firstSeenAt: row.first_seen_at,
+    lastSeenAt: row.last_seen_at,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
 }
 function toSettingsRow(item) {
   return { id: "owner", business_name: item.businessName || "", owner_name: item.ownerName || "", currency: item.currency || "USD", shopping_target_multiplier: item.shoppingTargetMultiplier || 2, updated_at: new Date().toISOString() };

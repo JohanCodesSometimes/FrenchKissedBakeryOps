@@ -36,6 +36,7 @@ const viewConfig = {
   "recipes-view": { title: "Recipe Costing", action: "Create Recipe", dialog: "recipe-dialog" },
   "sales-view": { title: "Sales", action: "Add Sale", dialog: "sale-dialog" },
   "customers-view": { title: "Contacts" },
+  "trends-view": { title: "TikTok Food Trend Finder" },
   "reports-view": { title: "Monthly Reports" },
   "shopping-view": { title: "Purchasing Intelligence" },
   "activity-view": { title: "Activity Log" },

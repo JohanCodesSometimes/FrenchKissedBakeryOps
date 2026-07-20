@@ -56,7 +56,7 @@ SUPABASE_ANON_KEY=<project anon key>
 SUPABASE_SERVICE_ROLE_KEY=<server-only service role key>
 ```
 
-Run `supabase/schema.sql` in the Supabase SQL Editor before adding these variables to Railway. The service-role key stays on the Node server and is never returned to the frontend.
+Run `supabase/schema.sql` in the Supabase SQL Editor before adding these variables to Railway. For an existing database, run `supabase/migrations/20260720_food_trends.sql` to add only Trend Finder. Both SQL files are idempotent and do not seed or replace data. The service-role key stays on the Node server and is never returned to the frontend.
 
 If Supabase is unavailable, `/api/health` remains available while database-dependent routes return a structured `503 DATABASE_UNAVAILABLE` response with `Retry-After`. BakeryOps retries with bounded exponential backoff and reloads application state after recovery.
 
@@ -108,6 +108,7 @@ DATA_DIR/activity.json
 DATA_DIR/price-history.json
 DATA_DIR/supplier-prices.json
 DATA_DIR/trend-reports.json
+DATA_DIR/food-trends.json
 DATA_DIR/square-connection.json
 DATA_DIR/receipt-items.json
 DATA_DIR/receipts.json
@@ -137,6 +138,25 @@ Writes use a temporary file and rename step. Existing records from the previous 
 - Lightweight 12-second sales polling that updates dashboard KPIs, charts, tables, inventory, customer intelligence, and purchasing forecasts without reloading
 - Live, Reconnecting, and Offline status with manual retry, visibility recovery, overlap prevention, and capped exponential backoff
 - OpenAI Vision receipt extraction with editable review and approval
+- TikTok Food Trend Finder with manual curation, filtering, deterministic bakery scoring, recommendations, and an archive workflow
+
+## TikTok Food Trend Finder
+
+Trend Finder helps the owner capture food ideas observed on TikTok or elsewhere, compare their bakery fit, and turn promising ideas into small, measurable product tests. It does **not** scrape TikTok, authenticate with TikTok, extract data from pasted links, or represent a live TikTok feed. Records are labeled as manually curated, demo samples, or configured-provider data, and source links are references only.
+
+### Apply the Supabase migration
+
+For an existing Supabase project, run `supabase/migrations/20260720_food_trends.sql` in the SQL Editor, then confirm `public.food_trends` exists, row-level security is enabled, and no public policy was created. New installations can run the complete `supabase/schema.sql`. If the migration has not been applied, the trend API returns a safe `503` message while `/api/health` remains available.
+
+### Load demo trends intentionally
+
+The database starts empty. Run `npm run seed:trends` to add eight clearly labeled development samples. The script is idempotent by sample ID, refuses to run when `NODE_ENV=production`, and never runs during startup or deployment.
+
+### Scoring
+
+**Analyze** runs deterministic local logic and does not require OpenAI. Relevance and opportunity scores range from 0–100 and consider bakery/category keywords, visual presentation, production difficulty, current inventory matches, seasonal timing, premium/margin signals, and the manually entered engagement signal. Scores are decision support, not verified market demand.
+
+Trend Finder adds no environment variables or paid-service dependency. Current limitations are manual discovery, owner-entered engagement signals, heuristic recommendations, and no configured external provider. A future approved provider can write normalized records with `data_origin=provider` through a server-only adapter.
 
 ## Cost Conversions
 
