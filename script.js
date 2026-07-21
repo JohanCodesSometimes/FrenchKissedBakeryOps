@@ -10,6 +10,7 @@ const receiptUnitOptions = [...unitOptions, "unknown"];
 const SALES_POLL_INTERVAL_MS = 12_000;
 const SALES_POLL_OVERLAP_MS = 60_000;
 const SALES_POLL_MAX_BACKOFF_MS = 60_000;
+const SYSTEM_STATUS_TIMEOUT_MS = 4_000;
 
 let appData = null;
 let appSettings = null;
@@ -19,10 +20,12 @@ let receiptsData = [];
 let customersData = [];
 let customerInsights = null;
 let activeView = "dashboard-view";
-let dashboardRefreshInFlight = false;
+let dashboardRefreshPromise = null;
 let salesCursor = "";
 let squareStatusData = null;
 let healthStatusData = null;
+let squareStatusRequest = null;
+let ownerStatusUnavailable = false;
 const loadedViews = new Set(["dashboard-view"]);
 const dialogTriggers = new WeakMap();
 const salesPollController = BakeryLiveSales.createPollController({
@@ -34,6 +37,40 @@ const salesPollController = BakeryLiveSales.createPollController({
 const contactsPollController = BakeryContactsPolling.createPollController({
   poll: refreshCustomers,
   interval: 30_000,
+});
+const systemStatusController = BakerySystemStatus.createController({
+  timeoutMs: SYSTEM_STATUS_TIMEOUT_MS,
+  checks: {
+    health: async ({ signal }) => {
+      const response = await fetch("/api/health", { cache: "no-store", signal });
+      if (!response.ok) throw new Error("Health check failed");
+      return response.json();
+    },
+    square: ({ signal }) => requestSquareStatus({ signal }),
+    owner: async () => {
+      if (!appData?.ownerStatus) await refreshDashboard({ showError: false });
+      if (!appData?.ownerStatus) throw new Error("Owner status is unavailable");
+      return appData.ownerStatus;
+    },
+  },
+  onStart(name) {
+    if (name === "health") healthStatusData = null;
+    if (name === "square") squareStatusData = null;
+    if (name === "owner") ownerStatusUnavailable = false;
+    renderSystemStatus();
+  },
+  onResult(name, result) {
+    if (name === "health") healthStatusData = result.status === "fulfilled" ? result.value : { unavailable: true };
+    if (name === "square") {
+      squareStatusData = result.status === "fulfilled" ? result.value : { unavailable: true };
+      if (!squareStatusData.unavailable) renderSquareSettingsStatus(squareStatusData);
+    }
+    if (name === "owner") ownerStatusUnavailable = result.status === "rejected" && !appData?.ownerStatus;
+    renderSystemStatus();
+  },
+  onStateChange() {
+    updateSystemStatusRetryButton();
+  },
 });
 
 const viewConfig = {
@@ -53,7 +90,7 @@ const viewConfig = {
 
 initialize();
 
-async function initialize() {
+function initialize() {
   applySavedTheme();
   document.querySelector("#current-date").textContent = new Date().toLocaleDateString(undefined, {
     weekday: "long",
@@ -63,17 +100,21 @@ async function initialize() {
   });
   document.querySelector("#report-month").value = localDateKey(new Date()).slice(0, 7);
   bindEvents();
-  await refreshDashboard();
-  salesPollController.start({ immediate: !appData });
-  void Promise.allSettled([refreshSettings({ background: true }), refreshSystemStatus()]);
+  renderSystemStatus();
+  void refreshDashboard();
+  void refreshSystemStatus();
+  void refreshSettings({ background: true });
+  void salesPollController.start({ immediate: true });
   updateContactsPolling({ refresh: false });
   document.addEventListener("visibilitychange", handlePageVisibility);
   window.addEventListener("pagehide", () => {
+    systemStatusController.stop();
     salesPollController.stop();
     contactsPollController.stop();
   });
   window.addEventListener("pageshow", () => {
     retryLiveSales();
+    void retrySystemStatus();
     updateContactsPolling({ refresh: activeView === "customers-view" });
   });
 }
@@ -87,11 +128,8 @@ function bindEvents() {
   document.querySelector("#refresh-shopping").addEventListener("click", refreshShoppingList);
   document.querySelector("#refresh-customers").addEventListener("click", refreshCustomers);
   document.querySelector("#sales-retry").addEventListener("click", retryLiveSales);
-  document.querySelector("#system-status-retry").addEventListener("click", refreshSystemStatus);
-  document.querySelector("#database-status-retry").addEventListener("click", async () => {
-    await refreshDashboard({ showError: false });
-    await refreshSystemStatus();
-  });
+  document.querySelector("#system-status-retry").addEventListener("click", () => { void retrySystemStatus(); });
+  document.querySelector("#database-status-retry").addEventListener("click", () => { void retrySystemStatus(["health", "owner"]); });
   document.querySelector("#customer-sort").addEventListener("change", refreshCustomers);
   document.querySelector("#settings-form").addEventListener("submit", saveSettings);
   document.querySelector("#square-disconnect").addEventListener("click", disconnectSquare);
@@ -366,7 +404,7 @@ function showView(viewId) {
 async function refreshAllData() {
   await refreshDashboard();
   await loadViewData(activeView, { force: true });
-  if (activeView === "dashboard-view") await refreshSystemStatus();
+  if (activeView === "dashboard-view") void refreshSystemStatus();
 }
 
 async function loadViewData(viewId, { force = false } = {}) {
@@ -468,9 +506,7 @@ function formatFileSize(bytes) {
 
 async function refreshSquareStatus({ background = false } = {}) {
   try {
-    const response = await fetch("/api/square/status");
-    if (!response.ok) throw new Error("Could not load Square status");
-    const status = await response.json();
+    const status = await requestSquareStatus();
     squareStatusData = status;
     renderSquareSettingsStatus(status);
     clearSectionError("settings-view", "square");
@@ -482,6 +518,19 @@ async function refreshSquareStatus({ background = false } = {}) {
     showSectionError("settings-view", "Square status is temporarily unavailable.", error.message, background, "square");
     return null;
   }
+}
+
+function requestSquareStatus({ signal } = {}) {
+  if (squareStatusRequest) return squareStatusRequest;
+  const request = fetch("/api/square/status", { cache: "no-store", signal }).then(async (response) => {
+    if (!response.ok) throw new Error("Could not load Square status");
+    return response.json();
+  });
+  const sharedRequest = request.finally(() => {
+    if (squareStatusRequest === sharedRequest) squareStatusRequest = null;
+  });
+  squareStatusRequest = sharedRequest;
+  return sharedRequest;
 }
 
 function renderSquareSettingsStatus(status) {
@@ -513,29 +562,36 @@ function renderSquareSettingsStatus(status) {
   if (status.lastError) document.querySelector("#square-status-copy").textContent += " Square reported a recent connection problem.";
 }
 
-async function refreshSystemStatus() {
-  healthStatusData = null;
-  if (!squareStatusData?.connected && !squareStatusData?.configured) squareStatusData = null;
-  renderSystemStatus();
-  const [healthResult, squareResult] = await Promise.allSettled([
-    fetch("/api/health", { cache: "no-store" }).then(async (response) => {
-      if (!response.ok) throw new Error("Health check failed");
-      return response.json();
-    }),
-    fetch("/api/square/status", { cache: "no-store" }).then(async (response) => {
-      if (!response.ok) throw new Error("Square check failed");
-      return response.json();
-    }),
-  ]);
-  healthStatusData = healthResult.status === "fulfilled" ? healthResult.value : { unavailable: true };
-  squareStatusData = squareResult.status === "fulfilled" ? squareResult.value : { unavailable: true };
-  if (!squareStatusData.unavailable) renderSquareSettingsStatus(squareStatusData);
-  renderSystemStatus();
+function refreshSystemStatus(names = ["health", "square", "owner"]) {
+  return systemStatusController.run(names);
+}
+
+function unavailableSystemChecks() {
+  const unavailable = [];
+  if (healthStatusData?.unavailable) unavailable.push("health");
+  if (squareStatusData?.unavailable) unavailable.push("square");
+  if (ownerStatusUnavailable) unavailable.push("owner");
+  return unavailable;
+}
+
+function retrySystemStatus(names = unavailableSystemChecks()) {
+  if (!names.length) return Promise.resolve([]);
+  return refreshSystemStatus(names);
+}
+
+function updateSystemStatusRetryButton() {
+  const button = document.querySelector("#system-status-retry");
+  if (!button) return;
+  const running = systemStatusController.isRunning();
+  const unavailable = unavailableSystemChecks();
+  button.hidden = !running && unavailable.length === 0;
+  button.disabled = running;
+  button.textContent = running ? "Checking…" : "Retry checks";
 }
 
 function renderSystemStatus() {
   const ownerStatus = appData?.ownerStatus;
-  const pending = !healthStatusData || !squareStatusData || !ownerStatus;
+  const pending = !healthStatusData || !squareStatusData || (!ownerStatus && !ownerStatusUnavailable);
   const square = !squareStatusData
     ? { label: "Checking…", detail: "Connection check in progress", state: "pending" }
     : squareStatusData.unavailable
@@ -543,7 +599,9 @@ function renderSystemStatus() {
       : squareStatusData.connected
         ? { label: "Connected", detail: "Sales can sync automatically", state: "ready" }
         : { label: squareStatusData.configured ? "Needs connection" : "Needs setup", detail: squareStatusData.configured ? "Connect the bakery Square account" : "Complete Square setup", state: "needs-attention", action: "Connect Square" };
-  const receipt = !ownerStatus
+  const receipt = ownerStatusUnavailable
+    ? { label: "Temporarily unavailable", detail: "Retry the dashboard check", state: "unavailable", action: "Retry" }
+    : !ownerStatus
     ? { label: "Checking…", detail: "Availability check in progress", state: "pending" }
     : ownerStatus.receiptAiAvailable
       ? { label: "Ready", detail: "Receipt images can be read", state: "ready" }
@@ -553,12 +611,16 @@ function renderSystemStatus() {
     : healthStatusData.unavailable || !healthStatusData.database?.ready
       ? { label: "Temporarily unavailable", detail: "The application is retrying the database", state: "unavailable", action: "Retry" }
       : { label: "Ready", detail: "Operational data is available", state: "ready" };
-  const lastSale = !ownerStatus
+  const lastSale = ownerStatusUnavailable
+    ? { label: "Temporarily unavailable", detail: "Retry the dashboard check", state: "unavailable" }
+    : !ownerStatus
     ? { label: "Checking…", detail: "Sales check in progress", state: "pending" }
     : ownerStatus.lastSquareSale
       ? { label: formatDateTime(ownerStatus.lastSquareSale.receivedAt || ownerStatus.lastSquareSale.date), detail: ownerStatus.lastSquareSale.product || "Square sale received", state: "ready" }
       : { label: "None received yet", detail: "The latest Square sale will appear here", state: "neutral" };
-  const inventory = !ownerStatus
+  const inventory = ownerStatusUnavailable
+    ? { label: "Temporarily unavailable", detail: "Retry the dashboard check", state: "unavailable", action: "Retry" }
+    : !ownerStatus
     ? { label: "Checking…", detail: "Setup check in progress", state: "pending" }
     : ownerStatus.inventoryConfigured
       ? { label: "Ready", detail: `${numberFormat.format(appData.counts.inventory)} items tracked`, state: "ready" }
@@ -573,6 +635,7 @@ function renderSystemStatus() {
   const needsAction = [square, receipt, database, inventory].some((item) => ["needs-attention", "unavailable"].includes(item.state));
   summary.className = `system-status-summary ${pending ? "pending" : needsAction ? "action-required" : ""}`.trim();
   summary.textContent = pending ? "Checks are still in progress." : needsAction ? "Action required: review the items marked below." : "All checked systems are ready.";
+  updateSystemStatusRetryButton();
 }
 
 function renderSystemStatusItem(selector, status) {
@@ -585,11 +648,17 @@ function renderSystemStatusItem(selector, status) {
   if (action) {
     action.hidden = !status.action;
     if (status.action) action.textContent = status.action;
-    if (selector === "#status-square" && status.action === "Retry") {
+    if (status.action === "Retry" && selector !== "#status-database") {
       action.removeAttribute("data-view-target");
-      action.onclick = refreshSystemStatus;
-    } else if (selector === "#status-square") {
-      action.dataset.viewTarget = "settings-view";
+      const retryNames = selector === "#status-square" ? ["square"] : ["owner"];
+      action.onclick = () => { void retrySystemStatus(retryNames); };
+    } else if (selector !== "#status-database") {
+      const viewTargets = {
+        "#status-square": "settings-view",
+        "#status-receipt-ai": "receipts-view",
+        "#status-inventory": "inventory-view",
+      };
+      if (viewTargets[selector]) action.dataset.viewTarget = viewTargets[selector];
       action.onclick = null;
     }
   }
@@ -708,26 +777,31 @@ function sortCustomerRows(rows) {
     : String(right.latestPurchaseDate || "").localeCompare(String(left.latestPurchaseDate || "")));
 }
 
-async function refreshDashboard({ showError = true } = {}) {
-  if (dashboardRefreshInFlight || document.hidden) return;
-  dashboardRefreshInFlight = true;
-  try {
-    const response = await fetch("/api/dashboard", { credentials: "same-origin", cache: "no-store" });
-    if (!response.ok) throw new Error("Could not load dashboard data");
-    appData = await response.json();
-    salesCursor = appData.salesCursor || appData.updatedAt || salesCursor;
-    renderAll();
-    clearSectionError("dashboard-view");
-    renderLiveSalesStatus({ state: "live" });
-    renderSystemStatus();
-    return true;
-  } catch (error) {
-    if (showError) showSectionError("dashboard-view", "Dashboard data could not load.", error.message);
-    renderSystemStatus();
-    return false;
-  } finally {
-    dashboardRefreshInFlight = false;
-  }
+function refreshDashboard({ showError = true } = {}) {
+  if (document.hidden) return Promise.resolve(false);
+  if (dashboardRefreshPromise) return dashboardRefreshPromise;
+  const request = (async () => {
+    try {
+      const response = await fetch("/api/dashboard", { credentials: "same-origin", cache: "no-store" });
+      if (!response.ok) throw new Error("Could not load dashboard data");
+      appData = await response.json();
+      ownerStatusUnavailable = false;
+      salesCursor = appData.salesCursor || appData.updatedAt || salesCursor;
+      renderAll();
+      clearSectionError("dashboard-view");
+      renderLiveSalesStatus({ state: "live" });
+      renderSystemStatus();
+      return true;
+    } catch (error) {
+      if (showError) showSectionError("dashboard-view", "Dashboard data could not load.", error.message);
+      renderSystemStatus();
+      return false;
+    } finally {
+      if (dashboardRefreshPromise === request) dashboardRefreshPromise = null;
+    }
+  })();
+  dashboardRefreshPromise = request;
+  return request;
 }
 
 function renderAll() {

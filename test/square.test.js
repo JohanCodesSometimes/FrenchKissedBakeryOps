@@ -405,7 +405,7 @@ test("Square connect handler is isolated from script.js without an owner-visible
   const fix = fs.readFileSync(path.join(root, "square-connect-fix.js"), "utf8");
   assert.match(html, /id="square-connect" type="button"/);
   assert.doesNotMatch(html, /Square UI build|final-square-oauth/);
-  const scriptIndex = html.indexOf('<script src="script.js?v=2026-07-21-owner-readiness"></script>');
+  const scriptIndex = html.search(/<script src="script\.js\?v=[^"]+"><\/script>/);
   const fixIndex = html.indexOf('<script src="/square-connect-fix.js?v=2026-07-21-owner-readiness"></script>');
   assert.ok(scriptIndex >= 0, "script.js must be loaded");
   assert.ok(fixIndex > scriptIndex, "square-connect-fix.js must load after script.js");

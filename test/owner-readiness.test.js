@@ -60,6 +60,7 @@ test("navigation groups preserve every page and update accessible current-page s
 test("dashboard status has pending, ready, setup, and degraded owner states", () => {
   const html = read("index.html");
   const script = read("script.js");
+  const controller = read("system-status.js");
   const server = read("server.js");
   for (const id of ["status-square", "status-receipt-ai", "status-database", "status-last-square-sale", "status-inventory"]) {
     assert.match(html, new RegExp(`id="${id}"`));
@@ -68,11 +69,33 @@ test("dashboard status has pending, ready, setup, and degraded owner states", ()
   assert.match(script, /Action required: review the items marked below/);
   assert.match(script, /Temporarily unavailable/);
   assert.match(script, /Needs setup/);
-  assert.match(script, /Promise\.allSettled\(\[\s*fetch\("\/api\/health"/);
+  assert.match(script, /SYSTEM_STATUS_TIMEOUT_MS = 4_000/);
+  assert.match(script, /fetch\("\/api\/health", \{ cache: "no-store", signal \}\)/);
+  assert.match(controller, /Promise\.race\(\[request, timeout, cancelled\]\)/);
+  assert.match(controller, /abortController\?\.abort\(\)/);
   assert.match(server, /ownerStatus: buildOwnerStatus\(\)/);
   assert.match(server, /receiptAiAvailable: Boolean\(receiptParser\?\.configured\)/);
   assert.match(server, /inventoryConfigured: collections\.inventory\.length > 0/);
   assert.match(server, /lastSquareSale/);
+});
+
+test("checklist loading is non-modal and cannot disable or cover the application", () => {
+  const html = read("index.html");
+  const script = read("script.js");
+  const styles = read("styles.css");
+  const initialize = script.slice(script.indexOf("function initialize"), script.indexOf("function bindEvents"));
+  const statusStyles = styles.slice(styles.indexOf(".system-status-panel"), styles.indexOf(".section-load-error"));
+  const statusLogic = script.slice(script.indexOf("function refreshSystemStatus"), script.indexOf("async function syncRecentSquareSales"));
+
+  assert.match(html, /<article class="panel system-status-panel"/);
+  assert.doesNotMatch(html, /<dialog[^>]+system-status|system-status-(?:overlay|backdrop)/);
+  assert.match(html, /id="system-status-summary" aria-live="off"/);
+  assert.doesNotMatch(statusStyles, /position:\s*(?:fixed|absolute)|z-index|pointer-events|100vw|100vh/);
+  assert.doesNotMatch(statusLogic, /showModal\(|document\.body|\.inert|pointerEvents|overflow/);
+  assert.doesNotMatch(statusLogic, /querySelectorAll\([^)]*(?:button|input|nav)[^)]*\).*disabled/);
+  assert.ok(initialize.indexOf("bindEvents();") < initialize.indexOf("void refreshDashboard();"));
+  assert.doesNotMatch(initialize, /await\s+/);
+  assert.match(initialize, /void salesPollController\.start\(\{ immediate: true \}\)/);
 });
 
 test("destructive actions use an accessible processing-safe confirmation dialog", () => {
@@ -90,9 +113,12 @@ test("destructive actions use an accessible processing-safe confirmation dialog"
 
 test("startup loads the Dashboard first and isolates secondary section errors", () => {
   const script = read("script.js");
-  const initialize = script.slice(script.indexOf("async function initialize"), script.indexOf("function bindEvents"));
-  assert.match(initialize, /await refreshDashboard\(\)/);
-  assert.match(initialize, /Promise\.allSettled\(\[refreshSettings/);
+  const initialize = script.slice(script.indexOf("function initialize"), script.indexOf("function bindEvents"));
+  assert.match(initialize, /void refreshDashboard\(\)/);
+  assert.match(initialize, /void refreshSystemStatus\(\)/);
+  assert.match(initialize, /void refreshSettings\(\{ background: true \}\)/);
+  assert.doesNotMatch(initialize, /await refreshDashboard\(\)/);
+  assert.doesNotMatch(initialize, /Promise\.allSettled/);
   assert.doesNotMatch(initialize, /await refreshAllData/);
   assert.match(script, /async function loadViewData/);
   assert.match(script, /"reports-view": \(\) => refreshReport/);

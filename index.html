@@ -54,7 +54,7 @@
         <section class="page-view active" id="dashboard-view">
           <article class="panel system-status-panel" aria-labelledby="system-status-title">
             <div class="panel-header"><div><p class="eyebrow">Owner checklist</p><h2 id="system-status-title">System status</h2></div><button class="ghost-button compact-button" id="system-status-retry" type="button">Retry checks</button></div>
-            <div class="system-status-summary pending" id="system-status-summary">Checks have not completed.</div>
+            <div class="system-status-summary pending" id="system-status-summary" aria-live="off">Checks have not completed.</div>
             <div class="system-status-grid">
               <div class="system-status-item" id="status-square"><span>Square</span><strong>Checking…</strong><small>Connection check in progress</small><button class="table-action" type="button" data-view-target="settings-view" hidden>Open Settings</button></div>
               <div class="system-status-item" id="status-receipt-ai"><span>Receipt AI</span><strong>Checking…</strong><small>Availability check in progress</small><button class="table-action" type="button" data-view-target="receipts-view" hidden>Open Receipts</button></div>
@@ -301,9 +301,10 @@
 
     <dialog id="confirmation-dialog"><form class="entry-form confirmation-form" id="confirmation-form"><div class="dialog-header"><div><p class="eyebrow" id="confirmation-eyebrow">Please confirm</p><h2 id="confirmation-title">Confirm action</h2></div><button class="icon-button" type="button" data-confirmation-cancel aria-label="Close confirmation">&times;</button></div><p class="settings-copy" id="confirmation-message"></p><p class="confirmation-impact" id="confirmation-impact"></p><div class="dialog-error" id="confirmation-error" role="alert" hidden></div><div class="form-actions"><button class="ghost-button" type="button" data-confirmation-cancel>Cancel</button><button class="primary-button danger-button" id="confirmation-submit" type="submit">Confirm</button></div></form></dialog>
 
+    <script src="system-status.js?v=2026-07-21-status-nonblocking"></script>
     <script src="live-sales.js?v=2026-07-18-live-sales-recovery"></script>
     <script src="contacts-polling.js?v=2026-07-21-owner-readiness"></script>
-    <script src="script.js?v=2026-07-21-owner-readiness"></script>
+    <script src="script.js?v=2026-07-21-status-nonblocking"></script>
     <script src="trend-finder-ui.js?v=2026-07-21-owner-readiness"></script>
     <script src="/square-connect-fix.js?v=2026-07-21-owner-readiness"></script>
   </body>
