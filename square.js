@@ -17,6 +17,8 @@ function createSquareService({ env, storage, connection, getSales, saveSales, lo
   const rawEnvironment = String(env.SQUARE_ENVIRONMENT || "sandbox").trim().toLowerCase();
   const environment = rawEnvironment === "production" ? "production" : "sandbox";
   const endpoints = SQUARE_ENVIRONMENTS[environment];
+  // SQUARE_APPLICATION_ID and SQUARE_OAUTH_REDIRECT_URL are deprecated deployment aliases.
+  // Keep them as fallbacks so an existing Railway service can migrate without downtime.
   const config = {
     environment,
     baseUrl: endpoints.baseUrl,

@@ -56,7 +56,7 @@ SUPABASE_ANON_KEY=<project anon key>
 SUPABASE_SERVICE_ROLE_KEY=<server-only service role key>
 ```
 
-Run `supabase/schema.sql` in the Supabase SQL Editor before adding these variables to Railway. For an existing database, run `supabase/migrations/20260720_food_trends.sql` to add only Trend Finder. Both SQL files are idempotent and do not seed or replace data. The service-role key stays on the Node server and is never returned to the frontend.
+Run `supabase/schema.sql` in the Supabase SQL Editor before adding these variables to Railway. For an existing database, run `supabase/migrations/20260720_food_trends.sql` to add Trend Finder, followed by `supabase/migrations/20260721_trend_testing.sql` to add owner-entered test plans and results. These SQL files are idempotent and do not seed or replace data. The service-role key stays on the Node server and is never returned to the frontend.
 
 If Supabase is unavailable, `/api/health` remains available while database-dependent routes return a structured `503 DATABASE_UNAVAILABLE` response with `Retry-After`. BakeryOps retries with bounded exponential backoff and reloads application state after recovery.
 
@@ -80,6 +80,8 @@ In the Square Developer Dashboard, add the exact OAuth redirect URL above. Creat
 
 After Railway redeploys, open Settings and select **Connect Square**. The dashboard asks `/api/square/oauth-url` for a new authorization URL at click time and never stores the OAuth URL in browser storage. Access and refresh tokens are encrypted before storage, remain server-only, and are never sent to the browser. Square payment, order, cancellation, and refund events reconcile onto one sale by Square payment or order ID. Fully refunded, canceled, failed, and pending records remain visible for audit but do not contribute revenue or purchasing demand; partial refunds contribute net revenue and proportional demand. Square lifecycle events do not directly mutate inventory quantities. Settings also provides **Sync Recent Square Sales**, which scans up to the previous 30 days and follows Square pagination.
 
+`SQUARE_APPLICATION_ID` and `SQUARE_OAUTH_REDIRECT_URL` remain supported only as deprecated aliases for existing deployments. New and updated environments should use `SQUARE_CLIENT_ID` and `SQUARE_REDIRECT_URI`; when both are present, the standard names take precedence.
+
 ## Receipt AI
 
 Receipt images are parsed on the Node backend with OpenAI Vision. Add this server-only Railway variable:
@@ -92,11 +94,11 @@ The browser accepts JPG, JPEG, and PNG files up to 15 MB. Images are held in mem
 
 Receipt AI does not use Python, MarkItDown, a virtual environment, or custom Nixpacks configuration. Manual Expense and Inventory entry remains available when receipt parsing is not configured or fails.
 
-Startup logs clearly show either Supabase mode or local JSON mode. Keep the Railway `/data` volume mounted until Supabase has been verified with production data.
+Startup logs clearly show either Supabase mode or local JSON mode. Production operational data is stored in Supabase; local JSON storage is for development only.
 
-## Persistent Storage
+## Local Development Storage
 
-The server creates these files at startup:
+When Supabase is not configured outside production, the server creates these local development files at startup:
 
 ```text
 DATA_DIR/expenses.json
@@ -138,7 +140,8 @@ Writes use a temporary file and rename step. Existing records from the previous 
 - Lightweight 12-second sales polling that updates dashboard KPIs, charts, tables, inventory, customer intelligence, and purchasing forecasts without reloading
 - Live, Reconnecting, and Offline status with manual retry, visibility recovery, overlap prevention, and capped exponential backoff
 - OpenAI Vision receipt extraction with editable review and approval
-- TikTok Food Trend Finder with manual curation, filtering, deterministic bakery scoring, recommendations, and an archive workflow
+- Trend Finder with manual curation, filtering, deterministic bakery scoring, recommendations, and owner-recorded test plans and results
+- Contacts refresh lifecycle that runs only while Contacts is active and the browser tab is visible
 
 ## TikTok Food Trend Finder
 
@@ -146,7 +149,7 @@ Trend Finder helps the owner capture food ideas observed on TikTok or elsewhere,
 
 ### Apply the Supabase migration
 
-For an existing Supabase project, run `supabase/migrations/20260720_food_trends.sql` in the SQL Editor, then confirm `public.food_trends` exists, row-level security is enabled, and no public policy was created. New installations can run the complete `supabase/schema.sql`. If the migration has not been applied, the trend API returns a safe `503` message while `/api/health` remains available.
+For an existing Supabase project, run `supabase/migrations/20260720_food_trends.sql` and then `supabase/migrations/20260721_trend_testing.sql` in the SQL Editor. Confirm `public.food_trends` exists, row-level security is enabled, and no public policy was created. New installations can run the complete `supabase/schema.sql`. If the base migration has not been applied, the trend API returns a safe `503` message while `/api/health` remains available.
 
 ### Load demo trends intentionally
 

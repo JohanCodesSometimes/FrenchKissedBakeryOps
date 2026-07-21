@@ -398,15 +398,15 @@ test("Square OAuth uses fresh state and the correct sandbox and production autho
 
 
 
-test("Square connect final handler is isolated from cached script.js", () => {
+test("Square connect handler is isolated from script.js without an owner-visible build marker", () => {
   const root = path.join(__dirname, "..");
   const html = fs.readFileSync(path.join(root, "index.html"), "utf8");
   const script = fs.readFileSync(path.join(root, "script.js"), "utf8");
   const fix = fs.readFileSync(path.join(root, "square-connect-fix.js"), "utf8");
   assert.match(html, /id="square-connect" type="button"/);
-  assert.match(html, /Square UI build final-square-oauth-2026-06-23-1/);
-  const scriptIndex = html.indexOf('<script src="script.js?v=2026-07-18-live-sales-recovery"></script>');
-  const fixIndex = html.indexOf('<script src="/square-connect-fix.js?v=final-square-oauth-2026-06-23-1"></script>');
+  assert.doesNotMatch(html, /Square UI build|final-square-oauth/);
+  const scriptIndex = html.indexOf('<script src="script.js?v=2026-07-21-owner-readiness"></script>');
+  const fixIndex = html.indexOf('<script src="/square-connect-fix.js?v=2026-07-21-owner-readiness"></script>');
   assert.ok(scriptIndex >= 0, "script.js must be loaded");
   assert.ok(fixIndex > scriptIndex, "square-connect-fix.js must load after script.js");
   assert.equal(script.includes('document.querySelector("#square-connect").addEventListener("click"'), false);
@@ -422,8 +422,46 @@ test("Square connect final handler is isolated from cached script.js", () => {
   assert.equal(fix.includes("const parsed = new URL(data.url)"), true);
   assert.equal(fix.includes('parsed.hostname !== "connect.squareupsandbox.com"'), true);
   assert.equal(fix.includes('parsed.hostname !== "connect.squareup.com"'), true);
-  assert.equal(fix.includes('console.error("[square-connect-fix] failed", error)'), true);
+  assert.equal(fix.includes('console.error("[square] connection start failed", error)'), true);
   assert.equal(fix.includes("window.location.href = data.url"), true);
+});
+
+test("Square standard environment names take precedence while legacy aliases remain compatible", async () => {
+  async function oauthUrl(env) {
+    const service = createSquareService({
+      env: { SQUARE_ENVIRONMENT: "sandbox", SQUARE_APPLICATION_SECRET: "secret", ...env },
+      storage: { async saveSquareConnection() {} }, connection: {}, getSales: () => [],
+      saveSales: async () => {}, logActivity: async () => {},
+    });
+    return new URL(await service.startOAuth());
+  }
+  const legacy = await oauthUrl({
+    SQUARE_APPLICATION_ID: "legacy-id",
+    SQUARE_OAUTH_REDIRECT_URL: "https://legacy.example.test/api/square/oauth/callback",
+  });
+  assert.equal(legacy.searchParams.get("client_id"), "legacy-id");
+  assert.equal(legacy.searchParams.get("redirect_uri"), "https://legacy.example.test/api/square/oauth/callback");
+  const standard = await oauthUrl({
+    SQUARE_CLIENT_ID: "standard-id", SQUARE_APPLICATION_ID: "legacy-id",
+    SQUARE_REDIRECT_URI: "https://standard.example.test/api/square/oauth/callback",
+    SQUARE_OAUTH_REDIRECT_URL: "https://legacy.example.test/api/square/oauth/callback",
+  });
+  assert.equal(standard.searchParams.get("client_id"), "standard-id");
+  assert.equal(standard.searchParams.get("redirect_uri"), "https://standard.example.test/api/square/oauth/callback");
+});
+
+test("Square documentation uses standard names and clearly deprecates compatibility aliases", () => {
+  const root = path.join(__dirname, "..");
+  const envExample = fs.readFileSync(path.join(root, ".env.example"), "utf8");
+  const readme = fs.readFileSync(path.join(root, "README.md"), "utf8");
+  const square = fs.readFileSync(path.join(root, "square.js"), "utf8");
+  assert.match(envExample, /^SQUARE_CLIENT_ID=/m);
+  assert.match(envExample, /^SQUARE_REDIRECT_URI=/m);
+  assert.doesNotMatch(envExample, /^SQUARE_APPLICATION_ID=|^SQUARE_OAUTH_REDIRECT_URL=/m);
+  assert.match(readme, /SQUARE_APPLICATION_ID.*SQUARE_OAUTH_REDIRECT_URL.*deprecated aliases/s);
+  assert.match(square, /env\.SQUARE_CLIENT_ID \|\| env\.SQUARE_APPLICATION_ID/);
+  assert.match(square, /env\.SQUARE_REDIRECT_URI \|\| env\.SQUARE_OAUTH_REDIRECT_URL/);
+  assert.match(square, /deprecated deployment aliases/);
 });
 
 test("frontend has no stale Square OAuth fallback path", () => {
