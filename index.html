@@ -15,26 +15,35 @@
           <div class="brand-mark">B</div>
           <div><strong id="brand-name">BakeryOps AI</strong><span>Operations dashboard</span></div>
         </div>
-        <nav class="nav-list">
-          <button class="active" type="button" data-view-target="dashboard-view">Dashboard</button>
-          <button type="button" data-view-target="expenses-view">Expenses</button>
-          <button type="button" data-view-target="receipts-view">Receipts</button>
-          <button type="button" data-view-target="inventory-view">Inventory</button>
-          <button type="button" data-view-target="recipes-view">Recipes</button>
-          <button type="button" data-view-target="sales-view">Sales</button>
-          <button type="button" data-view-target="customers-view">Contacts</button>
-          <button type="button" data-view-target="trends-view">Trend Finder</button>
-          <button type="button" data-view-target="reports-view">Reports</button>
-          <button type="button" data-view-target="shopping-view">Purchasing</button>
-          <button type="button" data-view-target="activity-view">Activity</button>
-          <button type="button" data-view-target="settings-view">Settings</button>
+        <nav class="nav-list" aria-label="BakeryOps sections">
+          <div class="nav-group">
+            <p class="nav-group-label">Daily Operations</p>
+            <button class="active" type="button" data-view-target="dashboard-view" aria-current="page">Dashboard</button>
+            <button type="button" data-view-target="expenses-view">Expenses</button>
+            <button type="button" data-view-target="receipts-view">Receipts</button>
+            <button type="button" data-view-target="inventory-view">Inventory</button>
+            <button type="button" data-view-target="sales-view">Sales</button>
+          </div>
+          <div class="nav-group">
+            <p class="nav-group-label">Intelligence</p>
+            <button type="button" data-view-target="shopping-view">Purchasing</button>
+            <button type="button" data-view-target="recipes-view">Recipes</button>
+            <button type="button" data-view-target="trends-view">Trends</button>
+            <button type="button" data-view-target="customers-view">Contacts</button>
+            <button type="button" data-view-target="reports-view">Reports</button>
+          </div>
+          <div class="nav-group">
+            <p class="nav-group-label">Administration</p>
+            <button type="button" data-view-target="activity-view">Activity</button>
+            <button type="button" data-view-target="settings-view">Settings</button>
+          </div>
         </nav>
-        <div class="role-card"><span>Private workspace</span><strong>Owner</strong><p>Persistent data is stored in the secured Railway volume.</p></div>
+        <div class="role-card"><span>Private workspace</span><strong>Owner</strong><p>Operational data is securely stored in the application database.</p></div>
       </aside>
 
       <main>
         <header class="topbar">
-          <div><p class="eyebrow" id="current-date"></p><h1 id="page-title">Dashboard</h1></div>
+          <div><p class="eyebrow" id="current-date"></p><h1 id="page-title" tabindex="-1">Dashboard</h1></div>
           <div class="topbar-actions">
             <button class="primary-button" id="page-action" type="button" data-open-dialog="sale-dialog">Add Sale</button>
             <button class="ghost-button" id="theme-toggle" type="button">Dark mode</button>
@@ -43,6 +52,17 @@
         <div class="notice" id="app-notice" role="status" hidden></div>
 
         <section class="page-view active" id="dashboard-view">
+          <article class="panel system-status-panel" aria-labelledby="system-status-title">
+            <div class="panel-header"><div><p class="eyebrow">Owner checklist</p><h2 id="system-status-title">System status</h2></div><button class="ghost-button compact-button" id="system-status-retry" type="button">Retry checks</button></div>
+            <div class="system-status-summary pending" id="system-status-summary">Checks have not completed.</div>
+            <div class="system-status-grid">
+              <div class="system-status-item" id="status-square"><span>Square</span><strong>Checking…</strong><small>Connection check in progress</small><button class="table-action" type="button" data-view-target="settings-view" hidden>Open Settings</button></div>
+              <div class="system-status-item" id="status-receipt-ai"><span>Receipt AI</span><strong>Checking…</strong><small>Availability check in progress</small><button class="table-action" type="button" data-view-target="receipts-view" hidden>Open Receipts</button></div>
+              <div class="system-status-item" id="status-database"><span>Database</span><strong>Checking…</strong><small>Connection check in progress</small><button class="table-action" type="button" id="database-status-retry" hidden>Retry</button></div>
+              <div class="system-status-item" id="status-last-square-sale"><span>Last Square sale</span><strong>Checking…</strong><small>Sales check in progress</small></div>
+              <div class="system-status-item" id="status-inventory"><span>Inventory</span><strong>Checking…</strong><small>Setup check in progress</small><button class="table-action" type="button" data-view-target="inventory-view" hidden>Set up Inventory</button></div>
+            </div>
+          </article>
           <article class="panel sales-summary-panel">
             <div class="panel-header"><div><p class="eyebrow">Live sales</p><h2>Sales Summary</h2></div><div class="live-sales-state"><span class="status-badge reconnecting" id="sales-connection-status" role="status">Reconnecting</span><button class="ghost-button compact-button" id="sales-retry" type="button">Retry</button><small id="sales-refreshed-at">Connecting to live sales</small></div></div>
             <div class="metrics-grid sales-summary-grid">
@@ -257,7 +277,7 @@
           <div class="settings-grid">
             <article class="panel"><div class="panel-header"><div><p class="eyebrow">Owner settings</p><h2>Business preferences</h2></div></div><form id="settings-form" class="settings-form"><label>Business Name<input name="businessName" type="text" maxlength="120" /></label><label>Owner Name<input name="ownerName" type="text" maxlength="120" /></label><label>Currency<select name="currency"><option value="USD">USD - US Dollar</option></select></label><label>Shopping Target Multiplier<input name="shoppingTargetMultiplier" type="number" min="1" max="10" step="0.5" /></label><button class="primary-button" type="submit">Save Settings</button></form></article>
             <article class="panel"><div class="panel-header"><div><p class="eyebrow">Backup</p><h2>Export all data</h2></div></div><p class="settings-copy">Download one JSON file containing settings, expenses, inventory, recipes, sales, price history, and activity.</p><a class="primary-button link-button full-width-button" href="/api/backup.json">Download Backup</a><div class="import-help"><strong>CSV column names</strong><p>Expenses: Date, Vendor, Category, Amount, Notes</p><p>Inventory: Ingredient Name, Quantity, Unit, Minimum Threshold, Supplier, Cost Per Unit</p><p>Sales: Date, Product, Quantity Sold, Sale Amount</p></div></article>
-            <article class="panel"><div class="panel-header"><div><p class="eyebrow">Point of sale</p><h2>Square</h2></div><span class="status-badge" id="square-status-badge">Checking</span></div><p class="settings-copy" id="square-status-copy">Checking Square connection status.</p><p class="build-marker" id="square-build-marker">Square UI build final-square-oauth-2026-06-23-1</p><dl class="integration-details"><div><dt>Environment</dt><dd id="square-environment">-</dd></div><div><dt>Merchant</dt><dd id="square-merchant">Not connected</dd></div><div><dt>Last sync</dt><dd id="square-last-sync">Never</dd></div></dl><div class="integration-actions"><button class="primary-button" id="square-connect" type="button">Connect Square</button><button class="secondary-button" id="square-sync" type="button" hidden>Sync Recent Square Sales</button><button class="ghost-button" id="square-disconnect" type="button" hidden>Disconnect</button></div></article>
+            <article class="panel"><div class="panel-header"><div><p class="eyebrow">Point of sale</p><h2>Square</h2></div><span class="status-badge" id="square-status-badge">Checking</span></div><p class="settings-copy" id="square-status-copy">Checking Square connection status.</p><dl class="integration-details"><div><dt>Environment</dt><dd id="square-environment">-</dd></div><div><dt>Merchant</dt><dd id="square-merchant">Not connected</dd></div><div><dt>Last sync</dt><dd id="square-last-sync">Never</dd></div></dl><div class="integration-actions"><button class="primary-button" id="square-connect" type="button">Connect Square</button><button class="secondary-button" id="square-sync" type="button" hidden>Sync Recent Square Sales</button><button class="ghost-button" id="square-disconnect" type="button" hidden>Disconnect</button></div></article>
           </div>
         </section>
       </main>
@@ -277,8 +297,11 @@
 
     <dialog id="trend-recommendation-dialog"><form class="entry-form" id="trend-recommendation-form"><input name="id" type="hidden" /><div class="dialog-header"><div><p class="eyebrow">Owner recommendation</p><h2>Edit Recommendation</h2></div><button class="icon-button" type="button" data-trend-close aria-label="Close">&times;</button></div><div class="form-grid"><label class="full-field">Suggested Product<input name="suggestedProduct" type="text" maxlength="500" /></label><label class="full-field">Suggested Action<textarea name="suggestedAction" rows="4" maxlength="1000"></textarea></label></div><div class="form-actions"><button class="ghost-button" type="button" data-trend-close>Cancel</button><button class="primary-button" type="submit">Save Recommendation</button></div></form></dialog>
 
+    <dialog id="confirmation-dialog"><form class="entry-form confirmation-form" id="confirmation-form"><div class="dialog-header"><div><p class="eyebrow" id="confirmation-eyebrow">Please confirm</p><h2 id="confirmation-title">Confirm action</h2></div><button class="icon-button" type="button" data-confirmation-cancel aria-label="Close confirmation">&times;</button></div><p class="settings-copy" id="confirmation-message"></p><p class="confirmation-impact" id="confirmation-impact"></p><div class="dialog-error" id="confirmation-error" role="alert" hidden></div><div class="form-actions"><button class="ghost-button" type="button" data-confirmation-cancel>Cancel</button><button class="primary-button danger-button" id="confirmation-submit" type="submit">Confirm</button></div></form></dialog>
+
     <script src="live-sales.js?v=2026-07-18-live-sales-recovery"></script>
-    <script src="script.js?v=2026-07-18-live-sales-recovery"></script>
+    <script src="contacts-polling.js?v=2026-07-21-owner-readiness"></script>
+    <script src="script.js?v=2026-07-21-owner-readiness"></script>
     <script src="trend-finder-ui.js?v=2026-07-20-trend-finder"></script>
     <script src="/square-connect-fix.js?v=final-square-oauth-2026-06-23-1"></script>
   </body>

@@ -21,11 +21,19 @@ let customerInsights = null;
 let activeView = "dashboard-view";
 let dashboardRefreshInFlight = false;
 let salesCursor = "";
+let squareStatusData = null;
+let healthStatusData = null;
+const loadedViews = new Set(["dashboard-view"]);
+const dialogTriggers = new WeakMap();
 const salesPollController = BakeryLiveSales.createPollController({
   poll: pollSalesUpdates,
   onStatus: renderLiveSalesStatus,
   baseDelay: SALES_POLL_INTERVAL_MS,
   maxDelay: SALES_POLL_MAX_BACKOFF_MS,
+});
+const contactsPollController = BakeryContactsPolling.createPollController({
+  poll: refreshCustomers,
+  interval: 30_000,
 });
 
 const viewConfig = {
@@ -36,7 +44,7 @@ const viewConfig = {
   "recipes-view": { title: "Recipe Costing", action: "Create Recipe", dialog: "recipe-dialog" },
   "sales-view": { title: "Sales", action: "Add Sale", dialog: "sale-dialog" },
   "customers-view": { title: "Contacts" },
-  "trends-view": { title: "TikTok Food Trend Finder" },
+  "trends-view": { title: "Trend Finder" },
   "reports-view": { title: "Monthly Reports" },
   "shopping-view": { title: "Purchasing Intelligence" },
   "activity-view": { title: "Activity Log" },
@@ -55,12 +63,19 @@ async function initialize() {
   });
   document.querySelector("#report-month").value = localDateKey(new Date()).slice(0, 7);
   bindEvents();
-  await refreshAllData();
+  await refreshDashboard();
   salesPollController.start({ immediate: !appData });
-  window.setInterval(refreshCustomers, 30_000);
-  document.addEventListener("visibilitychange", handleSalesVisibility);
-  window.addEventListener("pagehide", () => salesPollController.stop());
-  window.addEventListener("pageshow", retryLiveSales);
+  void Promise.allSettled([refreshSettings({ background: true }), refreshSystemStatus()]);
+  updateContactsPolling({ refresh: false });
+  document.addEventListener("visibilitychange", handlePageVisibility);
+  window.addEventListener("pagehide", () => {
+    salesPollController.stop();
+    contactsPollController.stop();
+  });
+  window.addEventListener("pageshow", () => {
+    retryLiveSales();
+    updateContactsPolling({ refresh: activeView === "customers-view" });
+  });
 }
 
 function bindEvents() {
@@ -72,6 +87,11 @@ function bindEvents() {
   document.querySelector("#refresh-shopping").addEventListener("click", refreshShoppingList);
   document.querySelector("#refresh-customers").addEventListener("click", refreshCustomers);
   document.querySelector("#sales-retry").addEventListener("click", retryLiveSales);
+  document.querySelector("#system-status-retry").addEventListener("click", refreshSystemStatus);
+  document.querySelector("#database-status-retry").addEventListener("click", async () => {
+    await refreshDashboard({ showError: false });
+    await refreshSystemStatus();
+  });
   document.querySelector("#customer-sort").addEventListener("change", refreshCustomers);
   document.querySelector("#settings-form").addEventListener("submit", saveSettings);
   document.querySelector("#square-disconnect").addEventListener("click", disconnectSquare);
@@ -96,16 +116,16 @@ function bindEvents() {
     if (navButton) return showView(navButton.dataset.viewTarget);
 
     const openButton = event.target.closest("[data-open-dialog]");
-    if (openButton) return openEntryDialog(openButton.dataset.openDialog);
+    if (openButton) return openEntryDialog(openButton.dataset.openDialog, null, openButton);
 
     const closeButton = event.target.closest("[data-close-dialog]");
     if (closeButton) return closeButton.closest("dialog").close();
 
     const editButton = event.target.closest("[data-edit-type]");
-    if (editButton) return editRecord(editButton.dataset.editType, editButton.dataset.recordId);
+    if (editButton) return editRecord(editButton.dataset.editType, editButton.dataset.recordId, editButton);
 
     const deleteButton = event.target.closest("[data-delete-type]");
-    if (deleteButton) return deleteRecord(deleteButton.dataset.deleteType, deleteButton.dataset.recordId);
+    if (deleteButton) return confirmDeleteRecord(deleteButton.dataset.deleteType, deleteButton.dataset.recordId, deleteButton);
 
     const recipeButton = event.target.closest("[data-view-recipe]");
     if (recipeButton) return viewRecipe(recipeButton.dataset.viewRecipe);
@@ -122,9 +142,18 @@ function bindEvents() {
 
   document.querySelectorAll("dialog").forEach((dialog) => {
     dialog.addEventListener("click", (event) => {
-      if (event.target === dialog) dialog.close();
+      if (event.target === dialog && !dialog.querySelector('[type="submit"]:disabled')) dialog.close();
+    });
+    dialog.addEventListener("cancel", (event) => {
+      if (dialog.querySelector('[type="submit"]:disabled')) event.preventDefault();
+    });
+    dialog.addEventListener("close", () => {
+      const trigger = dialogTriggers.get(dialog);
+      dialogTriggers.delete(dialog);
+      trigger?.focus?.({ preventScroll: true });
     });
   });
+  bindConfirmationDialog();
 
   bindCrudForm("expense-form", "expenses", "Expense saved");
   bindCrudForm("inventory-form", "inventory", "Inventory item saved");
@@ -306,14 +335,18 @@ function selectOptions(options, selected) {
 }
 
 function showView(viewId) {
+  if (!viewConfig[viewId]) return;
   activeView = viewId;
   document.querySelectorAll(".page-view").forEach((view) => {
     const active = view.id === viewId;
     view.hidden = !active;
     view.classList.toggle("active", active);
   });
-  document.querySelectorAll("[data-view-target]").forEach((button) => {
-    button.classList.toggle("active", button.dataset.viewTarget === viewId);
+  document.querySelectorAll(".nav-list [data-view-target]").forEach((button) => {
+    const active = button.dataset.viewTarget === viewId;
+    button.classList.toggle("active", active);
+    if (active) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
   });
 
   const config = viewConfig[viewId];
@@ -324,24 +357,44 @@ function showView(viewId) {
     action.textContent = config.action;
     action.dataset.openDialog = config.dialog;
   }
+  updateContactsPolling({ refresh: viewId === "customers-view" });
+  void loadViewData(viewId);
   window.scrollTo({ top: 0, behavior: "smooth" });
+  requestAnimationFrame(() => document.querySelector("#page-title").focus({ preventScroll: true }));
 }
 
 async function refreshAllData() {
-  await Promise.all([
-    refreshDashboard(),
-    refreshSettings(),
-    refreshPriceHistory(),
-    refreshActivity(),
-    refreshReport(),
-    refreshShoppingList(),
-    refreshSquareStatus(),
-    refreshReceipts(),
-    refreshCustomers(),
-  ]);
+  await refreshDashboard();
+  await loadViewData(activeView, { force: true });
+  if (activeView === "dashboard-view") await refreshSystemStatus();
 }
 
-async function refreshCustomers() {
+async function loadViewData(viewId, { force = false } = {}) {
+  if (!force && loadedViews.has(viewId)) return;
+  const loaders = {
+    "receipts-view": () => refreshReceipts(),
+    "inventory-view": () => refreshPriceHistory(),
+    "customers-view": () => Promise.resolve(),
+    "reports-view": () => refreshReport(),
+    "shopping-view": () => refreshShoppingList(),
+    "activity-view": () => refreshActivity(),
+    "settings-view": () => Promise.allSettled([refreshSettings(), refreshSquareStatus()]),
+  };
+  const loader = loaders[viewId];
+  if (!loader) return loadedViews.add(viewId);
+  await loader();
+  loadedViews.add(viewId);
+}
+
+function updateContactsPolling({ refresh = false } = {}) {
+  contactsPollController.update({
+    active: activeView === "customers-view",
+    visible: !document.hidden,
+    refresh,
+  });
+}
+
+async function refreshCustomers({ background = false } = {}) {
   try {
     const sort = document.querySelector("#customer-sort")?.value || "latestPurchase";
     const [customersResponse, insightsResponse] = await Promise.all([
@@ -352,8 +405,11 @@ async function refreshCustomers() {
     customersData = await customersResponse.json();
     customerInsights = await insightsResponse.json();
     renderCustomers();
+    clearSectionError("customers-view");
+    return true;
   } catch (error) {
-    showNotice(error.message, "error");
+    showSectionError("customers-view", "Contacts are temporarily unavailable.", error.message, background);
+    return false;
   }
 }
 
@@ -395,8 +451,11 @@ async function refreshReceipts() {
           <td><span class="receipt-status ${escapeHtml(receipt.status)}">${escapeHtml(receipt.status === "failed" ? receipt.errorCode || "Failed" : titleCase(receipt.status))}</span></td>
         </tr>`).join("")
       : tableEmpty(7, "No receipts uploaded yet", "Upload a grocery receipt to begin.");
+    clearSectionError("receipts-view");
+    return true;
   } catch (error) {
-    showNotice(error.message, "error");
+    showSectionError("receipts-view", "Receipts could not load.", error.message);
+    return false;
   }
 }
 
@@ -407,39 +466,132 @@ function formatFileSize(bytes) {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
-async function refreshSquareStatus() {
+async function refreshSquareStatus({ background = false } = {}) {
   try {
     const response = await fetch("/api/square/status");
     if (!response.ok) throw new Error("Could not load Square status");
     const status = await response.json();
-    const badge = document.querySelector("#square-status-badge");
-    const connect = document.querySelector("#square-connect");
-    const disconnect = document.querySelector("#square-disconnect");
-    const sync = document.querySelector("#square-sync");
-    badge.textContent = status.connected ? "Connected" : status.configured ? "Not connected" : "Setup required";
-    badge.classList.toggle("connected", status.connected);
-    document.querySelector("#square-status-copy").textContent = status.connected
+    squareStatusData = status;
+    renderSquareSettingsStatus(status);
+    clearSectionError("settings-view", "square");
+    renderSystemStatus();
+    return status;
+  } catch (error) {
+    squareStatusData = { unavailable: true };
+    renderSystemStatus();
+    showSectionError("settings-view", "Square status is temporarily unavailable.", error.message, background, "square");
+    return null;
+  }
+}
+
+function renderSquareSettingsStatus(status) {
+  const badge = document.querySelector("#square-status-badge");
+  const connect = document.querySelector("#square-connect");
+  const disconnect = document.querySelector("#square-disconnect");
+  const sync = document.querySelector("#square-sync");
+  badge.textContent = status.connected ? "Connected" : status.configured ? "Not connected" : "Setup required";
+  badge.classList.toggle("connected", status.connected);
+  document.querySelector("#square-status-copy").textContent = status.connected
       ? "Completed Square payments will sync into Sales automatically."
       : status.configured
         ? "Connect the bakery owner's Square account to begin syncing sales."
-        : "Add the Square environment variables in Railway before connecting.";
-    document.querySelector("#square-environment").textContent = titleCase(status.environment);
-    document.querySelector("#square-merchant").textContent = status.merchantId || "Not connected";
-    document.querySelector("#square-last-sync").textContent = status.lastSyncAt ? formatDateTime(status.lastSyncAt) : "Never";
-    const needsCustomerReconnect = status.connected && !status.customerReadEnabled;
-    if (needsCustomerReconnect) {
-      document.querySelector("#square-status-copy").textContent = "Reconnect Square once to display customer names and phone numbers.";
+        : "Square setup must be completed before connecting.";
+  document.querySelector("#square-environment").textContent = titleCase(status.environment);
+  document.querySelector("#square-merchant").textContent = status.merchantId || "Not connected";
+  document.querySelector("#square-last-sync").textContent = status.lastSyncAt ? formatDateTime(status.lastSyncAt) : "Never";
+  const needsCustomerReconnect = status.connected && !status.customerReadEnabled;
+  if (needsCustomerReconnect) {
+    document.querySelector("#square-status-copy").textContent = "Reconnect Square once to display customer names and phone numbers.";
+  }
+  connect.hidden = status.connected && !needsCustomerReconnect;
+  connect.textContent = needsCustomerReconnect ? "Reconnect for Customer Details" : "Connect Square";
+  connect.setAttribute("aria-disabled", String(!status.configured));
+  connect.onclick = status.configured ? null : (event) => event.preventDefault();
+  disconnect.hidden = !status.connected;
+  sync.hidden = !status.connected;
+  sync.disabled = !status.connected;
+  if (status.lastError) document.querySelector("#square-status-copy").textContent += " Square reported a recent connection problem.";
+}
+
+async function refreshSystemStatus() {
+  healthStatusData = null;
+  if (!squareStatusData?.connected && !squareStatusData?.configured) squareStatusData = null;
+  renderSystemStatus();
+  const [healthResult, squareResult] = await Promise.allSettled([
+    fetch("/api/health", { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) throw new Error("Health check failed");
+      return response.json();
+    }),
+    fetch("/api/square/status", { cache: "no-store" }).then(async (response) => {
+      if (!response.ok) throw new Error("Square check failed");
+      return response.json();
+    }),
+  ]);
+  healthStatusData = healthResult.status === "fulfilled" ? healthResult.value : { unavailable: true };
+  squareStatusData = squareResult.status === "fulfilled" ? squareResult.value : { unavailable: true };
+  if (!squareStatusData.unavailable) renderSquareSettingsStatus(squareStatusData);
+  renderSystemStatus();
+}
+
+function renderSystemStatus() {
+  const ownerStatus = appData?.ownerStatus;
+  const pending = !healthStatusData || !squareStatusData || !ownerStatus;
+  const square = !squareStatusData
+    ? { label: "Checking…", detail: "Connection check in progress", state: "pending" }
+    : squareStatusData.unavailable
+      ? { label: "Temporarily unavailable", detail: "Retry the Square check", state: "unavailable", action: "Retry" }
+      : squareStatusData.connected
+        ? { label: "Connected", detail: "Sales can sync automatically", state: "ready" }
+        : { label: squareStatusData.configured ? "Needs connection" : "Needs setup", detail: squareStatusData.configured ? "Connect the bakery Square account" : "Complete Square setup", state: "needs-attention", action: "Connect Square" };
+  const receipt = !ownerStatus
+    ? { label: "Checking…", detail: "Availability check in progress", state: "pending" }
+    : ownerStatus.receiptAiAvailable
+      ? { label: "Ready", detail: "Receipt images can be read", state: "ready" }
+      : { label: "Needs setup", detail: "Manual entry remains available", state: "needs-attention", action: "Open Receipts" };
+  const database = !healthStatusData
+    ? { label: "Checking…", detail: "Connection check in progress", state: "pending" }
+    : healthStatusData.unavailable || !healthStatusData.database?.ready
+      ? { label: "Temporarily unavailable", detail: "The application is retrying the database", state: "unavailable", action: "Retry" }
+      : { label: "Ready", detail: "Operational data is available", state: "ready" };
+  const lastSale = !ownerStatus
+    ? { label: "Checking…", detail: "Sales check in progress", state: "pending" }
+    : ownerStatus.lastSquareSale
+      ? { label: formatDateTime(ownerStatus.lastSquareSale.receivedAt || ownerStatus.lastSquareSale.date), detail: ownerStatus.lastSquareSale.product || "Square sale received", state: "ready" }
+      : { label: "None received yet", detail: "The latest Square sale will appear here", state: "neutral" };
+  const inventory = !ownerStatus
+    ? { label: "Checking…", detail: "Setup check in progress", state: "pending" }
+    : ownerStatus.inventoryConfigured
+      ? { label: "Ready", detail: `${numberFormat.format(appData.counts.inventory)} items tracked`, state: "ready" }
+      : { label: "Needs setup", detail: "Add ingredients to enable stock alerts", state: "needs-attention", action: "Set up Inventory" };
+
+  renderSystemStatusItem("#status-square", square);
+  renderSystemStatusItem("#status-receipt-ai", receipt);
+  renderSystemStatusItem("#status-database", database);
+  renderSystemStatusItem("#status-last-square-sale", lastSale);
+  renderSystemStatusItem("#status-inventory", inventory);
+  const summary = document.querySelector("#system-status-summary");
+  const needsAction = [square, receipt, database, inventory].some((item) => ["needs-attention", "unavailable"].includes(item.state));
+  summary.className = `system-status-summary ${pending ? "pending" : needsAction ? "action-required" : ""}`.trim();
+  summary.textContent = pending ? "Checks are still in progress." : needsAction ? "Action required: review the items marked below." : "All checked systems are ready.";
+}
+
+function renderSystemStatusItem(selector, status) {
+  const item = document.querySelector(selector);
+  if (!item) return;
+  item.className = `system-status-item ${status.state}`;
+  item.querySelector("strong").textContent = status.label;
+  item.querySelector("small").textContent = status.detail;
+  const action = item.querySelector("button");
+  if (action) {
+    action.hidden = !status.action;
+    if (status.action) action.textContent = status.action;
+    if (selector === "#status-square" && status.action === "Retry") {
+      action.removeAttribute("data-view-target");
+      action.onclick = refreshSystemStatus;
+    } else if (selector === "#status-square") {
+      action.dataset.viewTarget = "settings-view";
+      action.onclick = null;
     }
-    connect.hidden = status.connected && !needsCustomerReconnect;
-    connect.textContent = needsCustomerReconnect ? "Reconnect for Customer Details" : "Connect Square";
-    connect.setAttribute("aria-disabled", String(!status.configured));
-    connect.onclick = status.configured ? null : (event) => event.preventDefault();
-    disconnect.hidden = !status.connected;
-    sync.hidden = !status.connected;
-    sync.disabled = !status.connected;
-    if (status.lastError) document.querySelector("#square-status-copy").textContent += ` Last error: ${status.lastError}`;
-  } catch (error) {
-    showNotice(error.message, "error");
   }
 }
 
@@ -465,24 +617,25 @@ async function syncRecentSquareSales() {
   }
 }
 
-async function disconnectSquare() {
-  if (!window.confirm("Disconnect Square? Existing synced sales will remain.")) return;
-  const button = document.querySelector("#square-disconnect");
-  button.disabled = true;
-  try {
-    const response = await fetch("/api/square/disconnect", { method: "POST" });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Could not disconnect Square");
-    showNotice("Square disconnected", "success");
-    await Promise.all([refreshSquareStatus(), refreshActivity()]);
-  } catch (error) {
-    showNotice(error.message, "error");
-  } finally {
-    button.disabled = false;
-  }
+function disconnectSquare(event) {
+  openConfirmation({
+    trigger: event?.currentTarget || document.activeElement,
+    title: "Disconnect Square?",
+    message: "BakeryOps will stop receiving and syncing new Square sales until you reconnect.",
+    impact: "Existing sales, inventory, recipes, receipts, contacts, and other bakery data will remain unchanged.",
+    confirmLabel: "Disconnect Square",
+    async onConfirm() {
+      const response = await fetch("/api/square/disconnect", { method: "POST" });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(ownerErrorMessage(result, "Square could not be disconnected. Please try again."));
+      showNotice("Square disconnected", "success");
+      await Promise.allSettled([refreshSquareStatus(), refreshActivity({ background: true })]);
+    },
+  });
 }
 
-function handleSalesVisibility() {
+function handlePageVisibility() {
+  updateContactsPolling({ refresh: !document.hidden && activeView === "customers-view" });
   if (document.hidden) return salesPollController.stop();
   retryLiveSales();
 }
@@ -525,6 +678,8 @@ async function pollSalesUpdates() {
   if (update.inventory) renderInventory();
   if (update.customers) renderCustomers();
   if (update.purchasingIntelligence) renderShoppingList(update.purchasingIntelligence);
+  if (update.ownerStatus) appData.ownerStatus = update.ownerStatus;
+  renderSystemStatus();
 }
 
 function renderLiveSalesStatus({ state, failures = 0, nextDelay = SALES_POLL_INTERVAL_MS }) {
@@ -562,10 +717,13 @@ async function refreshDashboard({ showError = true } = {}) {
     appData = await response.json();
     salesCursor = appData.salesCursor || appData.updatedAt || salesCursor;
     renderAll();
+    clearSectionError("dashboard-view");
     renderLiveSalesStatus({ state: "live" });
+    renderSystemStatus();
     return true;
   } catch (error) {
-    if (showError) showNotice(error.message, "error");
+    if (showError) showSectionError("dashboard-view", "Dashboard data could not load.", error.message);
+    renderSystemStatus();
     return false;
   } finally {
     dashboardRefreshInFlight = false;
@@ -846,8 +1004,9 @@ function buildRecipePayload(fields) {
   return { ...fields, ingredients };
 }
 
-function openEntryDialog(dialogId, record = null) {
+function openEntryDialog(dialogId, record = null, trigger = document.activeElement) {
   const dialog = document.querySelector(`#${dialogId}`);
+  dialogTriggers.set(dialog, trigger);
   const form = dialog.querySelector("form");
   form.reset();
   form.elements.id.value = record?.id || "";
@@ -867,24 +1026,89 @@ function openEntryDialog(dialogId, record = null) {
   requestAnimationFrame(() => form.querySelector('input:not([type="hidden"]), select, textarea')?.focus());
 }
 
-function editRecord(type, id) {
+function editRecord(type, id, trigger) {
   const source = type === "inventory" ? appData.inventory.all : appData[type];
   const record = source.find((item) => item.id === id);
   if (!record) return showNotice("Record not found", "error");
-  openEntryDialog(`${type.replace(/s$/, "")}-dialog`, record);
+  openEntryDialog(`${type.replace(/s$/, "")}-dialog`, record, trigger);
 }
 
-async function deleteRecord(type, id) {
-  if (!window.confirm("Delete this record? This cannot be undone.")) return;
-  try {
-    const response = await fetch(`/api/${type}/${encodeURIComponent(id)}`, { method: "DELETE" });
-    const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Could not delete record");
-    showNotice("Record deleted", "success");
-    await refreshAllData();
-  } catch (error) {
-    showNotice(error.message, "error");
-  }
+function confirmDeleteRecord(type, id, trigger) {
+  const labels = { expenses: "expense", inventory: "inventory item", sales: "sale", recipes: "recipe" };
+  const label = labels[type] || "record";
+  openConfirmation({
+    trigger,
+    title: `Delete this ${label}?`,
+    message: `This will permanently delete the selected ${label}.`,
+    impact: type === "expenses"
+      ? "This cannot be undone. A linked receipt will remain in receipt history, but its expense link will be removed."
+      : "This action cannot be undone.",
+    confirmLabel: `Delete ${titleCase(label)}`,
+    async onConfirm() {
+      const response = await fetch(`/api/${type}/${encodeURIComponent(id)}`, { method: "DELETE" });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(ownerErrorMessage(result, "The record could not be deleted. Please try again."));
+      showNotice("Record deleted", "success");
+      await refreshAllData();
+    },
+  });
+}
+
+let confirmationAction = null;
+let confirmationTrigger = null;
+
+function bindConfirmationDialog() {
+  const dialog = document.querySelector("#confirmation-dialog");
+  const form = document.querySelector("#confirmation-form");
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (!confirmationAction) return;
+    const submit = document.querySelector("#confirmation-submit");
+    const controls = dialog.querySelectorAll("button");
+    controls.forEach((control) => { control.disabled = true; });
+    document.querySelector("#confirmation-error").hidden = true;
+    submit.textContent = "Working…";
+    try {
+      await confirmationAction();
+      dialog.close("confirmed");
+    } catch (error) {
+      const errorBox = document.querySelector("#confirmation-error");
+      errorBox.textContent = error.message || "The action could not be completed. Please try again.";
+      errorBox.hidden = false;
+    } finally {
+      controls.forEach((control) => { control.disabled = false; });
+      submit.textContent = submit.dataset.label || "Confirm";
+    }
+  });
+  dialog.querySelectorAll("[data-confirmation-cancel]").forEach((button) => {
+    button.addEventListener("click", () => dialog.close("cancel"));
+  });
+  dialog.addEventListener("cancel", (event) => {
+    if (document.querySelector("#confirmation-submit").disabled) event.preventDefault();
+  });
+  dialog.addEventListener("close", () => {
+    confirmationAction = null;
+    const trigger = confirmationTrigger;
+    confirmationTrigger = null;
+    trigger?.focus?.({ preventScroll: true });
+  });
+}
+
+function openConfirmation({ trigger, title, message, impact, confirmLabel, onConfirm }) {
+  const dialog = document.querySelector("#confirmation-dialog");
+  confirmationTrigger = trigger;
+  confirmationAction = onConfirm;
+  setText("#confirmation-title", title);
+  setText("#confirmation-message", message);
+  setText("#confirmation-impact", impact);
+  const errorBox = document.querySelector("#confirmation-error");
+  errorBox.hidden = true;
+  errorBox.textContent = "";
+  const submit = document.querySelector("#confirmation-submit");
+  submit.dataset.label = confirmLabel;
+  submit.textContent = confirmLabel;
+  dialog.showModal();
+  requestAnimationFrame(() => submit.focus());
 }
 
 function fillForm(form, record) {
@@ -985,7 +1209,7 @@ function tableEmpty(columns, title, message = "") {
   return `<tr><td colspan="${columns}"><div class="empty-state table-empty"><strong>${title}</strong>${message ? `<p>${message}</p>` : ""}</div></td></tr>`;
 }
 
-async function refreshSettings() {
+async function refreshSettings({ background = false } = {}) {
   try {
     const response = await fetch("/api/settings");
     if (!response.ok) throw new Error("Could not load settings");
@@ -995,8 +1219,11 @@ async function refreshSettings() {
       if (form.elements.namedItem(key)) form.elements.namedItem(key).value = value ?? "";
     });
     document.querySelector("#brand-name").textContent = appSettings.businessName || "BakeryOps AI";
+    clearSectionError("settings-view", "settings");
+    return true;
   } catch (error) {
-    showNotice(error.message, "error");
+    showSectionError("settings-view", "Owner settings could not load.", error.message, background, "settings");
+    return false;
   }
 }
 
@@ -1016,7 +1243,7 @@ async function saveSettings(event) {
     appSettings = result;
     document.querySelector("#brand-name").textContent = result.businessName || "BakeryOps AI";
     showNotice("Owner settings saved", "success");
-    await Promise.all([refreshActivity(), refreshShoppingList()]);
+    await Promise.allSettled([refreshActivity({ background: true }), refreshShoppingList({ background: true })]);
   } catch (error) {
     showNotice(error.message, "error");
   } finally {
@@ -1024,7 +1251,7 @@ async function saveSettings(event) {
   }
 }
 
-async function refreshPriceHistory() {
+async function refreshPriceHistory({ background = false } = {}) {
   try {
     const response = await fetch("/api/price-history");
     if (!response.ok) throw new Error("Could not load price history");
@@ -1038,12 +1265,15 @@ async function refreshPriceHistory() {
           )
           .join("")
       : tableEmpty(5, "No ingredient price history yet", "Prices are recorded when inventory costs are added or changed.");
+    clearSectionError("inventory-view");
+    return true;
   } catch (error) {
-    showNotice(error.message, "error");
+    showSectionError("inventory-view", "Price history could not load.", error.message, background);
+    return false;
   }
 }
 
-async function refreshActivity() {
+async function refreshActivity({ background = false } = {}) {
   try {
     const response = await fetch("/api/activity");
     if (!response.ok) throw new Error("Could not load activity");
@@ -1056,12 +1286,15 @@ async function refreshActivity() {
           )
           .join("")
       : '<div class="empty-state"><strong>No activity yet</strong><p>Record changes will appear here.</p></div>';
+    clearSectionError("activity-view");
+    return true;
   } catch (error) {
-    showNotice(error.message, "error");
+    showSectionError("activity-view", "Activity could not load.", error.message, background);
+    return false;
   }
 }
 
-async function refreshReport() {
+async function refreshReport({ background = false } = {}) {
   const month = document.querySelector("#report-month").value || localDateKey(new Date()).slice(0, 7);
   try {
     const response = await fetch(`/api/reports/monthly?month=${encodeURIComponent(month)}`);
@@ -1088,18 +1321,24 @@ async function refreshReport() {
       })),
       "No expenses for this month",
     );
+    clearSectionError("reports-view");
+    return true;
   } catch (error) {
-    showNotice(error.message, "error");
+    showSectionError("reports-view", "This report could not load.", error.message, background);
+    return false;
   }
 }
 
-async function refreshShoppingList() {
+async function refreshShoppingList({ background = false } = {}) {
   try {
     const response = await fetch("/api/purchasing-intelligence", { cache: "no-store" });
     if (!response.ok) throw new Error("Could not load purchasing forecast");
     renderShoppingList(await response.json());
+    clearSectionError("shopping-view");
+    return true;
   } catch (error) {
-    showNotice(error.message, "error");
+    showSectionError("shopping-view", "Purchasing intelligence could not load.", error.message, background);
+    return false;
   }
 }
 
@@ -1296,6 +1535,37 @@ function showNotice(message, type = "info") {
   notice.hidden = false;
   clearTimeout(showNotice.timer);
   showNotice.timer = setTimeout(() => (notice.hidden = true), 4500);
+}
+
+function ownerErrorMessage(result, fallback) {
+  if (typeof result?.error === "string") return result.error;
+  if (typeof result?.error?.message === "string") return result.error.message;
+  return fallback;
+}
+
+function showSectionError(viewId, title, detail, background = false, source = "default") {
+  const view = document.querySelector(`#${viewId}`);
+  if (!view) return;
+  let error = [...view.children].find((child) => child.classList.contains("section-load-error") && child.dataset.errorSource === source);
+  if (!error) {
+    error = document.createElement("div");
+    error.className = "section-load-error";
+    error.dataset.errorSource = source;
+    view.prepend(error);
+  }
+  error.replaceChildren();
+  const heading = document.createElement("strong");
+  const copy = document.createElement("p");
+  heading.textContent = title;
+  copy.textContent = detail || "Please try again.";
+  error.append(heading, copy);
+  if (!background && activeView === viewId) error.setAttribute("role", "alert");
+  else error.removeAttribute("role");
+}
+
+function clearSectionError(viewId, source = "default") {
+  const view = document.querySelector(`#${viewId}`);
+  [...(view?.children || [])].find((child) => child.classList.contains("section-load-error") && child.dataset.errorSource === source)?.remove();
 }
 
 function dialogTitle(type) {

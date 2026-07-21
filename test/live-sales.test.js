@@ -120,7 +120,7 @@ test("dashboard polling exposes recovery controls and refreshes all sale-depende
   assert.match(script, /const SALES_POLL_OVERLAP_MS = 60_000/);
   assert.match(script, /createPollController/);
   assert.match(script, /\/api\/sales\/updates\?since=/);
-  assert.match(script, /handleSalesVisibility/);
+  assert.match(script, /handlePageVisibility/);
   assert.match(script, /retryLiveSales\(\)/);
   assert.match(script, /renderLiveSalesStatus/);
   assert.match(script, /renderInventory\(\)/);

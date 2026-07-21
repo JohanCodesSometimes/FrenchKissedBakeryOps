@@ -1126,7 +1126,24 @@ function buildDashboard() {
     inventory: { ...inventory, alerts: inventory.summary.lowStockCount },
     recipes: collections.recipes.map((recipe) => enrichRecipe(recipe)),
     productPerformance: buildProductPerformance(),
+    ownerStatus: buildOwnerStatus(),
     updatedAt: new Date().toISOString(),
+  };
+}
+
+function buildOwnerStatus() {
+  const latestSale = collections.sales
+    .filter((sale) => sale.source === "square" || sale.squarePaymentId || sale.squareOrderId)
+    .sort((left, right) => (latestRecordTimestamp(right) || right.date || "").localeCompare(latestRecordTimestamp(left) || left.date || ""))[0];
+  return {
+    receiptAiAvailable: Boolean(receiptParser?.configured),
+    inventoryConfigured: collections.inventory.length > 0,
+    lastSquareSale: latestSale ? {
+      id: latestSale.id,
+      product: latestSale.product,
+      date: latestSale.date,
+      receivedAt: latestRecordTimestamp(latestSale) || latestSale.date,
+    } : null,
   };
 }
 
@@ -1153,6 +1170,7 @@ function buildSalesUpdatePayload(sales, cursor) {
     customers: customers.map(toSafeCustomer),
     customerInsights: buildCustomerInsights(customers, now),
     purchasingIntelligence: buildPurchasingDashboard(),
+    ownerStatus: buildOwnerStatus(),
   };
 }
 

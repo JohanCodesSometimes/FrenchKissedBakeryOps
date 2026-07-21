@@ -111,7 +111,23 @@ small,
 
 .nav-list {
   display: grid;
-  gap: 6px;
+  gap: 20px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.nav-group {
+  display: grid;
+  gap: 4px;
+}
+
+.nav-group-label {
+  margin: 0 10px 5px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  font-weight: 850;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
 }
 
 .nav-list a {
@@ -141,6 +157,20 @@ small,
 .nav-list button:hover {
   background: var(--surface-2);
   color: var(--ink);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible,
+[tabindex]:focus-visible {
+  outline: 3px solid color-mix(in srgb, var(--accent) 45%, transparent);
+  outline-offset: 2px;
+}
+
+#page-title:focus {
+  outline: 0;
 }
 
 .role-card {
@@ -330,6 +360,95 @@ select {
 
 .sales-summary-panel {
   margin-bottom: 18px;
+}
+
+.system-status-panel {
+  margin-bottom: 18px;
+}
+
+.system-status-summary {
+  margin: 16px 0;
+  padding: 11px 13px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--success) 12%, var(--surface));
+  color: var(--success);
+  font-weight: 800;
+}
+
+.system-status-summary.action-required {
+  background: color-mix(in srgb, var(--warn) 13%, var(--surface));
+  color: var(--warn);
+}
+
+.system-status-summary.pending {
+  background: var(--surface-2);
+  color: var(--muted);
+}
+
+.system-status-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.system-status-item {
+  min-width: 0;
+  padding: 14px;
+  border-right: 1px solid var(--line);
+}
+
+.system-status-item:last-child {
+  border-right: 0;
+}
+
+.system-status-item span,
+.system-status-item strong,
+.system-status-item small {
+  display: block;
+}
+
+.system-status-item span,
+.system-status-item small {
+  color: var(--muted);
+}
+
+.system-status-item span {
+  margin-bottom: 6px;
+  font-size: 0.76rem;
+}
+
+.system-status-item small {
+  margin-top: 5px;
+  line-height: 1.4;
+}
+
+.system-status-item.needs-attention strong,
+.system-status-item.unavailable strong {
+  color: var(--warn);
+}
+
+.system-status-item .table-action {
+  margin-top: 10px;
+}
+
+.section-load-error {
+  margin-bottom: 16px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--danger) 35%, var(--line));
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 7%, var(--surface));
+}
+
+.section-load-error strong,
+.section-load-error p {
+  display: block;
+}
+
+.section-load-error p {
+  margin: 5px 0 0;
+  color: var(--muted);
 }
 
 .sales-summary-grid {
@@ -1277,12 +1396,6 @@ dialog::backdrop {
 .integration-details dd { margin: 0; text-align: right; overflow-wrap: anywhere; }
 .integration-actions { display: flex; flex-wrap: wrap; gap: 10px; }
 
-.build-marker {
-  margin: -4px 0 14px;
-  color: var(--muted);
-  font-size: 0.76rem;
-}
-
 .import-help {
   margin-top: 20px;
   padding: 14px;
@@ -1388,6 +1501,61 @@ dialog::backdrop {
   border-top: 1px solid var(--line);
 }
 
+fieldset {
+  margin: 18px 0 0;
+  padding: 16px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+
+legend {
+  padding: 0 6px;
+  font-weight: 800;
+}
+
+.optional-label {
+  color: var(--muted);
+  font-size: 0.76rem;
+  font-weight: 600;
+}
+
+.dialog-error {
+  margin-top: 16px;
+  padding: 11px 13px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--danger) 11%, var(--surface));
+  color: var(--danger);
+  font-weight: 700;
+}
+
+.confirmation-impact {
+  margin: 14px 0 0;
+  padding: 12px;
+  border-left: 3px solid var(--warn);
+  background: var(--surface-2);
+  line-height: 1.5;
+}
+
+.danger-button {
+  border-color: var(--danger);
+  background: var(--danger);
+}
+
+.trend-test-details {
+  display: grid;
+  gap: 6px;
+  margin: 14px 0;
+  padding: 13px;
+  border-radius: 8px;
+  background: var(--surface-2);
+  color: var(--muted);
+  font-size: 0.86rem;
+}
+
+.trend-test-details strong {
+  color: var(--ink);
+}
+
 .trend-heading .settings-copy { max-width: 760px; margin: 8px 0 0; }
 .trend-summary-grid { grid-template-columns: repeat(4, minmax(0, 1fr)); margin-bottom: 20px; }
 .trend-filter-panel { margin-bottom: 20px; padding: 18px; }
@@ -1431,6 +1599,9 @@ dialog::backdrop {
 @media (max-width: 1100px) {
   .trend-card-grid { grid-template-columns: 1fr; }
   .trend-filters { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .system-status-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .system-status-item { border-bottom: 1px solid var(--line); }
+  .system-status-item:nth-child(even) { border-right: 0; }
   .sales-summary-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -1450,9 +1621,7 @@ dialog::backdrop {
     padding: 16px;
   }
 
-  .nav-list {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
+  .nav-list { grid-template-columns: repeat(3, minmax(0, 1fr)); overflow: visible; }
 
   .role-card {
     display: none;
@@ -1486,6 +1655,8 @@ dialog::backdrop {
 
 @media (max-width: 700px) {
   .trend-summary-grid, .trend-filters, .trend-scores { grid-template-columns: 1fr; }
+  .system-status-grid { grid-template-columns: 1fr; }
+  .system-status-item { border-right: 0; }
   .trend-card-header, .trend-source-row { align-items: flex-start; flex-direction: column; }
   .trend-badges { justify-content: flex-start; }
   .trend-scores div { border-right: 0; border-bottom: 1px solid var(--line); }
@@ -1512,17 +1683,34 @@ dialog::backdrop {
 
   .metrics-grid,
   .alert-strip,
-  .trend-grid,
-  .nav-list {
+  .trend-grid {
     grid-template-columns: 1fr;
   }
 
   .nav-list {
-    display: flex;
-    gap: 4px;
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 12px;
     overflow-x: auto;
     padding-bottom: 4px;
     -webkit-overflow-scrolling: touch;
+  }
+
+  .nav-group {
+    display: flex;
+    gap: 4px;
+    min-width: max-content;
+  }
+
+  .nav-group-label {
+    align-self: center;
+    min-width: max-content;
+    margin: 0 7px 0 0;
+  }
+
+  .nav-group button {
+    width: auto;
+    min-width: max-content;
   }
 
   .nav-list button {

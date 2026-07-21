@@ -60,6 +60,11 @@ test("configured Basic authentication protects local APIs without breaking local
   const dashboard = await request(port, "/api/dashboard", { Authorization: authorization });
   assert.equal(dashboard.status, 200);
   assert.ok(Array.isArray(dashboard.body.sales));
+  assert.deepEqual(dashboard.body.ownerStatus, {
+    receiptAiAvailable: false,
+    inventoryConfigured: false,
+    lastSquareSale: null,
+  });
 });
 
 function startServer(overrides) {
