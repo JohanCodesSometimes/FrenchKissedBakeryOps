@@ -82,8 +82,9 @@ test("dashboard status has pending, ready, setup, and degraded owner states", ()
 test("checklist loading is non-modal and cannot disable or cover the application", () => {
   const html = read("index.html");
   const script = read("script.js");
+  const appShell = read("app-shell.js");
   const styles = read("styles.css");
-  const initialize = script.slice(script.indexOf("function initialize"), script.indexOf("function bindEvents"));
+  const initialize = script.slice(script.indexOf("function initialize()"), script.indexOf("function initializeSystemStatusChecklist"));
   const statusStyles = styles.slice(styles.indexOf(".system-status-panel"), styles.indexOf(".section-load-error"));
   const statusLogic = script.slice(script.indexOf("function refreshSystemStatus"), script.indexOf("async function syncRecentSquareSales"));
 
@@ -96,6 +97,10 @@ test("checklist loading is non-modal and cannot disable or cover the application
   assert.ok(initialize.indexOf("bindEvents();") < initialize.indexOf("void refreshDashboard();"));
   assert.doesNotMatch(initialize, /await\s+/);
   assert.match(initialize, /void salesPollController\.start\(\{ immediate: true \}\)/);
+  assert.match(appShell, /document\.addEventListener\("click", handleClick, true\)/);
+  assert.match(appShell, /armStatusFallback\(\)/);
+  assert.match(appShell, /Status checks unavailable/);
+  assert.match(appShell, /unlockInterface\(\)/);
 });
 
 test("destructive actions use an accessible processing-safe confirmation dialog", () => {

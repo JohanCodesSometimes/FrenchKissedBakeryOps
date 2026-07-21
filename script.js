@@ -28,50 +28,19 @@ let squareStatusRequest = null;
 let ownerStatusUnavailable = false;
 const loadedViews = new Set(["dashboard-view"]);
 const dialogTriggers = new WeakMap();
-const salesPollController = BakeryLiveSales.createPollController({
-  poll: pollSalesUpdates,
-  onStatus: renderLiveSalesStatus,
-  baseDelay: SALES_POLL_INTERVAL_MS,
-  maxDelay: SALES_POLL_MAX_BACKOFF_MS,
-});
-const contactsPollController = BakeryContactsPolling.createPollController({
-  poll: refreshCustomers,
-  interval: 30_000,
-});
-const systemStatusController = BakerySystemStatus.createController({
-  timeoutMs: SYSTEM_STATUS_TIMEOUT_MS,
-  checks: {
-    health: async ({ signal }) => {
-      const response = await fetch("/api/health", { cache: "no-store", signal });
-      if (!response.ok) throw new Error("Health check failed");
-      return response.json();
-    },
-    square: ({ signal }) => requestSquareStatus({ signal }),
-    owner: async () => {
-      if (!appData?.ownerStatus) await refreshDashboard({ showError: false });
-      if (!appData?.ownerStatus) throw new Error("Owner status is unavailable");
-      return appData.ownerStatus;
-    },
-  },
-  onStart(name) {
-    if (name === "health") healthStatusData = null;
-    if (name === "square") squareStatusData = null;
-    if (name === "owner") ownerStatusUnavailable = false;
-    renderSystemStatus();
-  },
-  onResult(name, result) {
-    if (name === "health") healthStatusData = result.status === "fulfilled" ? result.value : { unavailable: true };
-    if (name === "square") {
-      squareStatusData = result.status === "fulfilled" ? result.value : { unavailable: true };
-      if (!squareStatusData.unavailable) renderSquareSettingsStatus(squareStatusData);
-    }
-    if (name === "owner") ownerStatusUnavailable = result.status === "rejected" && !appData?.ownerStatus;
-    renderSystemStatus();
-  },
-  onStateChange() {
-    updateSystemStatusRetryButton();
-  },
-});
+const inertPollController = { start: () => Promise.resolve(false), stop() {}, update() {} };
+const salesPollController = globalThis.BakeryLiveSales?.createPollController
+  ? globalThis.BakeryLiveSales.createPollController({
+    poll: pollSalesUpdates,
+    onStatus: renderLiveSalesStatus,
+    baseDelay: SALES_POLL_INTERVAL_MS,
+    maxDelay: SALES_POLL_MAX_BACKOFF_MS,
+  })
+  : inertPollController;
+const contactsPollController = globalThis.BakeryContactsPolling?.createPollController
+  ? globalThis.BakeryContactsPolling.createPollController({ poll: refreshCustomers, interval: 30_000 })
+  : inertPollController;
+let systemStatusController = null;
 
 const viewConfig = {
   "dashboard-view": { title: "Dashboard", action: "Add Sale", dialog: "sale-dialog" },
@@ -88,9 +57,17 @@ const viewConfig = {
   "settings-view": { title: "Owner Settings" },
 };
 
-initialize();
+try {
+  initialize();
+} catch (error) {
+  logClientInitializationError("ApplicationInitializationError", error);
+  globalThis.BakeryAppShell?.showStatusUnavailable("Status checks unavailable");
+  globalThis.BakeryAppShell?.unlockInterface();
+}
 
 function initialize() {
+  bindEvents();
+  globalThis.BakeryAppShell?.unlockInterface();
   applySavedTheme();
   document.querySelector("#current-date").textContent = new Date().toLocaleDateString(undefined, {
     weekday: "long",
@@ -99,16 +76,14 @@ function initialize() {
     year: "numeric",
   });
   document.querySelector("#report-month").value = localDateKey(new Date()).slice(0, 7);
-  bindEvents();
-  renderSystemStatus();
+  initializeSystemStatusChecklist();
   void refreshDashboard();
-  void refreshSystemStatus();
   void refreshSettings({ background: true });
   void salesPollController.start({ immediate: true });
   updateContactsPolling({ refresh: false });
   document.addEventListener("visibilitychange", handlePageVisibility);
   window.addEventListener("pagehide", () => {
-    systemStatusController.stop();
+    systemStatusController?.stop();
     salesPollController.stop();
     contactsPollController.stop();
   });
@@ -117,6 +92,59 @@ function initialize() {
     void retrySystemStatus();
     updateContactsPolling({ refresh: activeView === "customers-view" });
   });
+}
+
+function initializeSystemStatusChecklist() {
+  try {
+    const statusApi = globalThis.BakerySystemStatus;
+    if (typeof statusApi?.createController !== "function") throw new ReferenceError("SystemStatusController is unavailable");
+    systemStatusController = statusApi.createController({
+      timeoutMs: SYSTEM_STATUS_TIMEOUT_MS,
+      checks: {
+        health: async ({ signal }) => {
+          const response = await fetch("/api/health", { cache: "no-store", signal });
+          if (!response.ok) throw new Error("Health check failed");
+          return response.json();
+        },
+        square: ({ signal }) => requestSquareStatus({ signal }),
+        owner: async () => {
+          if (!appData?.ownerStatus) await refreshDashboard({ showError: false });
+          if (!appData?.ownerStatus) throw new Error("Owner status is unavailable");
+          return appData.ownerStatus;
+        },
+      },
+      onStart(name) {
+        if (name === "health") healthStatusData = null;
+        if (name === "square") squareStatusData = null;
+        if (name === "owner") ownerStatusUnavailable = false;
+        renderSystemStatus();
+      },
+      onResult(name, result) {
+        if (name === "health") healthStatusData = result.status === "fulfilled" ? result.value : { unavailable: true };
+        if (name === "square") {
+          squareStatusData = result.status === "fulfilled" ? result.value : { unavailable: true };
+          if (!squareStatusData.unavailable) renderSquareSettingsStatus(squareStatusData);
+        }
+        if (name === "owner") ownerStatusUnavailable = result.status === "rejected" && !appData?.ownerStatus;
+        renderSystemStatus();
+      },
+      onStateChange() {
+        updateSystemStatusRetryButton();
+      },
+    });
+    globalThis.BakeryAppShell?.setStatusRunner((names) => refreshSystemStatus(names));
+    renderSystemStatus();
+    void refreshSystemStatus();
+  } catch (error) {
+    logClientInitializationError("SystemStatusInitializationError", error);
+    globalThis.BakeryAppShell?.showStatusUnavailable("Status checks unavailable");
+  }
+}
+
+function logClientInitializationError(kind, error) {
+  const name = String(error?.name || "ClientError");
+  const message = String(error?.message || "Client initialization failed").slice(0, 240);
+  console.error(`[BakeryOps] ${kind}: ${name}: ${message}`);
 }
 
 function bindEvents() {
@@ -563,6 +591,10 @@ function renderSquareSettingsStatus(status) {
 }
 
 function refreshSystemStatus(names = ["health", "square", "owner"]) {
+  if (!systemStatusController) {
+    globalThis.BakeryAppShell?.showStatusUnavailable("Status checks unavailable");
+    return Promise.resolve([]);
+  }
   return systemStatusController.run(names);
 }
 
@@ -582,7 +614,7 @@ function retrySystemStatus(names = unavailableSystemChecks()) {
 function updateSystemStatusRetryButton() {
   const button = document.querySelector("#system-status-retry");
   if (!button) return;
-  const running = systemStatusController.isRunning();
+  const running = Boolean(systemStatusController?.isRunning());
   const unavailable = unavailableSystemChecks();
   button.hidden = !running && unavailable.length === 0;
   button.disabled = running;

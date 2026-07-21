@@ -1306,8 +1306,11 @@ function serveStatic(pathname, res) {
   const allowedFiles = new Set([
     path.join(root, "index.html"),
     path.join(root, "styles.css"),
+    path.join(root, "app-shell.js"),
     path.join(root, "script.js"),
+    path.join(root, "system-status.js"),
     path.join(root, "live-sales.js"),
+    path.join(root, "contacts-polling.js"),
     path.join(root, "trend-finder-ui.js"),
     path.join(root, "square-connect-fix.js"),
   ]);
@@ -1322,7 +1325,7 @@ function serveStatic(pathname, res) {
       res.end("Not found");
       return;
     }
-    res.writeHead(200, { "Content-Type": types[path.extname(filePath)] });
+    res.writeHead(200, { "Content-Type": types[path.extname(filePath)], ...noStoreHeaders() });
     res.end(body);
   });
 }
