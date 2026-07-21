@@ -123,12 +123,23 @@ create table if not exists public.food_trends (
   suggested_product text not null default '' check (char_length(suggested_product) <= 500),
   suggested_action text not null default '' check (char_length(suggested_action) <= 1000),
   analysis_reasoning text not null default '' check (char_length(analysis_reasoning) <= 1000),
+  expected_ingredient_cost numeric(12,2) check (expected_ingredient_cost is null or expected_ingredient_cost >= 0),
+  planned_quantity integer check (planned_quantity is null or planned_quantity >= 1),
+  test_date date,
+  target_selling_price numeric(12,2) check (target_selling_price is null or target_selling_price >= 0),
+  test_notes text not null default '' check (char_length(test_notes) <= 2000),
+  actual_quantity_produced integer check (actual_quantity_produced is null or actual_quantity_produced >= 0),
+  actual_quantity_sold integer check (actual_quantity_sold is null or actual_quantity_sold >= 0),
+  actual_revenue numeric(14,2) check (actual_revenue is null or actual_revenue >= 0),
+  result_notes text not null default '' check (char_length(result_notes) <= 2000),
+  test_outcome text check (test_outcome is null or test_outcome in ('repeat','adopt','revise','dismiss')),
   data_origin text not null default 'manual' check (data_origin in ('manual','demo','provider')),
   first_seen_at timestamptz not null default now(),
   last_seen_at timestamptz not null default now(),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now(),
-  check (last_seen_at >= first_seen_at)
+  check (last_seen_at >= first_seen_at),
+  check (actual_quantity_produced is null or actual_quantity_sold is null or actual_quantity_sold <= actual_quantity_produced)
 );
 
 create table if not exists public.activity_log (

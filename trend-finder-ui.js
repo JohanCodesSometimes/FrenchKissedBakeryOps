@@ -8,27 +8,40 @@
   const addForm = document.querySelector("#trend-form");
   const recommendationDialog = document.querySelector("#trend-recommendation-dialog");
   const recommendationForm = document.querySelector("#trend-recommendation-form");
+  const testDialog = document.querySelector("#trend-test-dialog");
+  const testForm = document.querySelector("#trend-test-form");
   const trendsById = new Map();
+  const dialogTriggers = new WeakMap();
   let refreshSequence = 0;
   let submitting = false;
   let searchTimer = null;
 
   if (!list || !state || !filters || !addDialog || !addForm) return;
 
-  document.querySelector("#open-trend-dialog").addEventListener("click", () => {
+  document.querySelector("#open-trend-dialog").addEventListener("click", (event) => {
     addForm.reset();
     addForm.elements.sourcePlatform.value = "TikTok (manually observed)";
     addForm.elements.engagementScore.value = "0";
-    addDialog.showModal();
+    openDialog(addDialog, event.currentTarget);
     addForm.elements.title.focus();
   });
 
   document.querySelectorAll("[data-trend-close]").forEach((button) => {
     button.addEventListener("click", () => button.closest("dialog").close());
   });
-  [addDialog, recommendationDialog].forEach((dialog) => dialog.addEventListener("click", (event) => {
-    if (event.target === dialog) dialog.close();
-  }));
+  [addDialog, recommendationDialog, testDialog].forEach((dialog) => {
+    dialog.addEventListener("click", (event) => {
+      if (event.target === dialog && !submitting) dialog.close();
+    });
+    dialog.addEventListener("cancel", (event) => {
+      if (submitting) event.preventDefault();
+    });
+    dialog.addEventListener("close", () => {
+      const trigger = dialogTriggers.get(dialog);
+      dialogTriggers.delete(dialog);
+      trigger?.focus?.({ preventScroll: true });
+    });
+  });
 
   filters.addEventListener("submit", (event) => event.preventDefault());
   filters.addEventListener("change", refreshTrends);
@@ -83,6 +96,35 @@
     } finally {
       submitting = false;
       setFormBusy(recommendationForm, false, "Save Recommendation");
+    }
+  });
+
+  testForm.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    if (submitting || !testForm.reportValidity()) return;
+    const fields = Object.fromEntries(new FormData(testForm).entries());
+    const id = fields.id;
+    delete fields.id;
+    const numberFields = ["expectedIngredientCost", "plannedQuantity", "targetSellingPrice", "actualQuantityProduced", "actualQuantitySold", "actualRevenue"];
+    numberFields.forEach((field) => {
+      fields[field] = fields[field] === "" ? null : Number(fields[field]);
+    });
+    fields.trendStatus = "testing";
+    submitting = true;
+    setFormBusy(testForm, true, "Saving…");
+    const errorBox = document.querySelector("#trend-test-error");
+    errorBox.hidden = true;
+    try {
+      await request(`/api/trends/${encodeURIComponent(id)}`, { method: "PATCH", body: fields });
+      testDialog.close();
+      showNotice("Trend test saved", "success");
+      await refreshTrends();
+    } catch (error) {
+      errorBox.textContent = error.message;
+      errorBox.hidden = false;
+    } finally {
+      submitting = false;
+      setFormBusy(testForm, false, "Save Trend Test");
     }
   });
 
@@ -173,6 +215,20 @@
     if (trend.analysisReasoning) recommendation.append(element("small", "", trend.analysisReasoning));
     card.append(recommendation);
 
+    if (trend.testDate || trend.expectedIngredientCost !== null && trend.expectedIngredientCost !== undefined) {
+      const details = element("div", "trend-test-details");
+      details.append(element("strong", "", "Trend test"));
+      if (trend.testDate) details.append(element("span", "", `Planned for ${formatDate(trend.testDate)}`));
+      if (trend.plannedQuantity !== null && trend.plannedQuantity !== undefined) {
+        details.append(element("span", "", `${Number(trend.plannedQuantity)} planned · ${formatMoney(trend.expectedIngredientCost)} expected cost · ${formatMoney(trend.targetSellingPrice)} target price`));
+      }
+      if (trend.actualQuantityProduced !== null && trend.actualQuantityProduced !== undefined) {
+        details.append(element("span", "", `${Number(trend.actualQuantityProduced)} produced · ${Number(trend.actualQuantitySold || 0)} sold · ${formatMoney(trend.actualRevenue || 0)} revenue`));
+      }
+      if (trend.testOutcome) details.append(element("span", "", `Outcome: ${outcomeLabel(trend.testOutcome)}`));
+      card.append(details);
+    }
+
     card.append(element("p", "trend-dates", `First seen ${formatDate(trend.firstSeenAt)} · Last seen ${formatDate(trend.lastSeenAt)}`));
     const actions = element("div", "trend-actions");
     actions.append(
@@ -181,7 +237,7 @@
       actionButton("Test", "testing", trend.id),
       actionButton("Adopt", "adopted", trend.id),
       actionButton("Edit recommendation", "edit", trend.id),
-      actionButton("Archive", "archived", trend.id, "ghost-button danger"),
+      actionButton("Dismiss", "archived", trend.id, "ghost-button danger"),
     );
     card.append(actions);
     return card;
@@ -194,8 +250,27 @@
       recommendationForm.elements.id.value = trend.id;
       recommendationForm.elements.suggestedProduct.value = trend.suggestedProduct || "";
       recommendationForm.elements.suggestedAction.value = trend.suggestedAction || "";
-      recommendationDialog.showModal();
+      openDialog(recommendationDialog, button);
       recommendationForm.elements.suggestedProduct.focus();
+      return;
+    }
+    if (button.dataset.trendAction === "testing") {
+      testForm.reset();
+      testForm.elements.id.value = trend.id;
+      testForm.elements.expectedIngredientCost.value = valueOrEmpty(trend.expectedIngredientCost);
+      testForm.elements.plannedQuantity.value = valueOrEmpty(trend.plannedQuantity);
+      testForm.elements.testDate.value = trend.testDate || new Date().toISOString().slice(0, 10);
+      testForm.elements.targetSellingPrice.value = valueOrEmpty(trend.targetSellingPrice);
+      testForm.elements.testNotes.value = trend.testNotes || "";
+      testForm.elements.actualQuantityProduced.value = valueOrEmpty(trend.actualQuantityProduced);
+      testForm.elements.actualQuantitySold.value = valueOrEmpty(trend.actualQuantitySold);
+      testForm.elements.actualRevenue.value = valueOrEmpty(trend.actualRevenue);
+      testForm.elements.resultNotes.value = trend.resultNotes || "";
+      testForm.elements.testOutcome.value = trend.testOutcome || "";
+      setText("#trend-test-title", trend.testDate ? "Update Trend Test" : "Plan a Trend Test");
+      document.querySelector("#trend-test-error").hidden = true;
+      openDialog(testDialog, button);
+      testForm.elements.expectedIngredientCost.focus();
       return;
     }
     button.disabled = true;
@@ -229,7 +304,10 @@
     const response = await fetch(url, requestOptions);
     let result = {};
     try { result = await response.json(); } catch { /* Safe generic error below. */ }
-    if (!response.ok) throw new Error(result.error || "Trend Finder request failed");
+    if (!response.ok) {
+      const message = typeof result.error === "string" ? result.error : result.error?.message;
+      throw new Error(message || "Trend Finder request failed");
+    }
     return result;
   }
 
@@ -246,6 +324,11 @@
     const submit = form.querySelector('[type="submit"]');
     submit.disabled = busy;
     submit.textContent = label;
+  }
+
+  function openDialog(dialog, trigger) {
+    dialogTriggers.set(dialog, trigger);
+    dialog.showModal();
   }
 
   function scoreItem(label, value, highlight = false) {
@@ -274,6 +357,14 @@
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? "not available" : parsed.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   }
+
+  function formatMoney(value) {
+    return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(Number(value || 0));
+  }
+  function outcomeLabel(value) {
+    return { repeat: "Repeat the test", adopt: "Adopt", revise: "Revise and retest", dismiss: "Dismiss" }[value] || titleCase(value);
+  }
+  function valueOrEmpty(value) { return value === null || value === undefined ? "" : String(value); }
 
   refreshTrends();
 })();

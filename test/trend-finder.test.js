@@ -36,6 +36,27 @@ test("trend input validation normalizes safe values and rejects invalid URLs", (
   assert.throws(() => normalizeTrendInput({ title: "Bad dates", firstSeenAt: "2026-07-20", lastSeenAt: "2026-07-19" }), /cannot be before/);
 });
 
+test("trend test plans and results validate numeric, date, and outcome fields", () => {
+  const existing = normalizeTrendInput({ title: "Testable trend", category: "cakes" }, {
+    id: "10000000-0000-4000-8000-000000000001", now: "2026-07-20T12:00:00.000Z",
+  });
+  const planned = normalizeTrendPatch({
+    trendStatus: "testing", expectedIngredientCost: "18.25", plannedQuantity: "12",
+    testDate: "2026-07-25", targetSellingPrice: "7.50", testNotes: "Weekend counter test",
+    actualQuantityProduced: "12", actualQuantitySold: "10", actualRevenue: "75",
+    resultNotes: "Good response", testOutcome: "repeat",
+  }, existing);
+  assert.equal(planned.expectedIngredientCost, 18.25);
+  assert.equal(planned.plannedQuantity, 12);
+  assert.equal(planned.actualQuantitySold, 10);
+  assert.equal(planned.testOutcome, "repeat");
+  assert.throws(() => normalizeTrendPatch({ expectedIngredientCost: 10 }, existing), /Complete expected cost/);
+  assert.throws(() => normalizeTrendPatch({ expectedIngredientCost: -1, plannedQuantity: 5, testDate: "2026-07-25", targetSellingPrice: 5 }, existing), /non-negative/);
+  assert.throws(() => normalizeTrendPatch({ expectedIngredientCost: 1, plannedQuantity: 5, testDate: "not-a-date", targetSellingPrice: 5 }, existing), /valid date/);
+  assert.throws(() => normalizeTrendPatch({ actualQuantityProduced: 5, actualQuantitySold: 6 }, existing), /cannot exceed/);
+  assert.throws(() => normalizeTrendPatch({ testOutcome: "secret" }, existing), /Final outcome is invalid/);
+});
+
 test("trend filters, sorting, summaries, duplicates, and update allowlist are deterministic", () => {
   const base = {
     description: "", sourcePlatform: "Manual", sourceUrl: "", hashtags: [], engagementScore: 0,
@@ -155,6 +176,19 @@ test("authenticated trend API covers listing, creation, duplicate rejection, ana
   assert.equal(filtered.status, 200);
   assert.equal((await filtered.json()).trends.length, 1);
 
+  const testing = await jsonFetch(`${base}/api/trends/${id}`, auth, "PATCH", {
+    trendStatus: "testing", expectedIngredientCost: 22.5, plannedQuantity: 12,
+    testDate: "2026-07-25", targetSellingPrice: 8, testNotes: "Saturday test",
+    actualQuantityProduced: 12, actualQuantitySold: 9, actualRevenue: 72,
+    resultNotes: "Strong sell-through", testOutcome: "repeat",
+  });
+  assert.equal(testing.response.status, 200);
+  assert.equal(testing.body.expectedIngredientCost, 22.5);
+  assert.equal(testing.body.actualQuantitySold, 9);
+  const persisted = await fetch(`${base}/api/trends?status=testing`, { headers: auth });
+  assert.equal(persisted.status, 200);
+  assert.equal((await persisted.json()).trends[0].testOutcome, "repeat");
+
   const archived = await jsonFetch(`${base}/api/trends/${id}`, auth, "PATCH", { trendStatus: "archived" });
   assert.equal(archived.body.trendStatus, "archived");
   const badId = await jsonFetch(`${base}/api/trends/not-an-id`, auth, "PATCH", { trendStatus: "active" });
@@ -167,6 +201,7 @@ test("Trend Finder UI documents manual sources, avoids unsafe stored-text render
   const ui = fs.readFileSync(path.join(root, "trend-finder-ui.js"), "utf8");
   const css = fs.readFileSync(path.join(root, "styles.css"), "utf8");
   const migration = fs.readFileSync(path.join(root, "supabase", "migrations", "20260720_food_trends.sql"), "utf8");
+  const testingMigration = fs.readFileSync(path.join(root, "supabase", "migrations", "20260721_trend_testing.sql"), "utf8");
   const server = fs.readFileSync(path.join(root, "server.js"), "utf8");
   assert.match(html, /data-view-target="trends-view"/);
   assert.match(html, /not live TikTok data/i);
@@ -176,6 +211,11 @@ test("Trend Finder UI documents manual sources, avoids unsafe stored-text render
   assert.match(css, /@media \(max-width: 700px\)[\s\S]*\.trend-summary-grid/);
   assert.match(migration, /enable row level security/);
   assert.match(migration, /food_trends_opportunity_idx/);
+  assert.match(testingMigration, /add column if not exists expected_ingredient_cost/);
+  assert.match(testingMigration, /actual_quantity_sold <= actual_quantity_produced/);
+  assert.match(fs.readFileSync(path.join(root, "storage.js"), "utf8"), /Trend testing is unavailable until the latest food_trends migration is applied/);
+  assert.match(html, /id="trend-test-dialog"/);
+  assert.match(ui, /fields\.trendStatus = "testing"/);
   assert.match(server, /path\.join\(root, "trend-finder-ui\.js"\)/);
 });
 

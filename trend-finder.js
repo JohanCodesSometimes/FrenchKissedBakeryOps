@@ -4,9 +4,12 @@ const CATEGORIES = ["pastries", "cakes", "cookies", "drinks", "seasonal", "packa
 const STATUSES = ["active", "watching", "testing", "adopted", "archived"];
 const SORTS = ["opportunity", "recent", "oldest", "engagement", "relevance"];
 const DATA_ORIGINS = ["manual", "demo", "provider"];
+const TEST_OUTCOMES = ["repeat", "adopt", "revise", "dismiss"];
 const PATCH_FIELDS = new Set([
   "description", "category", "engagementScore", "relevanceScore", "opportunityScore",
   "trendStatus", "suggestedProduct", "suggestedAction", "hashtags", "sourceUrl",
+  "expectedIngredientCost", "plannedQuantity", "testDate", "targetSellingPrice", "testNotes",
+  "actualQuantityProduced", "actualQuantitySold", "actualRevenue", "resultNotes", "testOutcome",
 ]);
 
 function normalizeTrendInput(input, options = {}) {
@@ -16,7 +19,7 @@ function normalizeTrendInput(input, options = {}) {
   const firstSeenAt = timestamp(input.firstSeenAt, "First seen date", now);
   const lastSeenAt = timestamp(input.lastSeenAt, "Last seen date", now);
   if (Date.parse(lastSeenAt) < Date.parse(firstSeenAt)) throw validationError("Last seen date cannot be before first seen date");
-  return {
+  const trend = {
     id: options.id,
     title,
     description: optionalText(input.description, 2000),
@@ -31,12 +34,30 @@ function normalizeTrendInput(input, options = {}) {
     suggestedProduct: optionalText(input.suggestedProduct, 500),
     suggestedAction: optionalText(input.suggestedAction, 1000),
     analysisReasoning: optionalText(input.analysisReasoning, 1000),
+    expectedIngredientCost: nullableMoney(input.expectedIngredientCost, "Expected ingredient cost"),
+    plannedQuantity: nullableQuantity(input.plannedQuantity, "Planned quantity", false),
+    testDate: nullableDate(input.testDate, "Test date"),
+    targetSellingPrice: nullableMoney(input.targetSellingPrice, "Target selling price"),
+    testNotes: optionalText(input.testNotes, 2000),
+    actualQuantityProduced: nullableQuantity(input.actualQuantityProduced, "Actual quantity produced", true),
+    actualQuantitySold: nullableQuantity(input.actualQuantitySold, "Actual quantity sold", true),
+    actualRevenue: nullableMoney(input.actualRevenue, "Actual revenue"),
+    resultNotes: optionalText(input.resultNotes, 2000),
+    testOutcome: nullableAllowed(input.testOutcome, TEST_OUTCOMES, "Final outcome"),
     dataOrigin: allowed(options.dataOrigin || input.dataOrigin || "manual", DATA_ORIGINS, "Data origin"),
     firstSeenAt,
     lastSeenAt,
     createdAt: options.createdAt || now,
     updatedAt: options.updatedAt || now,
   };
+  const planValues = [trend.expectedIngredientCost, trend.plannedQuantity, trend.testDate, trend.targetSellingPrice];
+  if (planValues.some((value) => value !== null && value !== "") && planValues.some((value) => value === null || value === "")) {
+    throw validationError("Complete expected cost, planned quantity, test date, and target selling price");
+  }
+  if (trend.actualQuantityProduced !== null && trend.actualQuantitySold !== null && trend.actualQuantitySold > trend.actualQuantityProduced) {
+    throw validationError("Actual quantity sold cannot exceed actual quantity produced");
+  }
+  return trend;
 }
 
 function normalizeTrendPatch(input, existing, options = {}) {
@@ -56,6 +77,29 @@ function normalizeTrendPatch(input, existing, options = {}) {
   if ("suggestedAction" in input) patch.suggestedAction = optionalText(input.suggestedAction, 1000);
   if ("hashtags" in input) patch.hashtags = normalizeHashtags(input.hashtags);
   if ("sourceUrl" in input) patch.sourceUrl = sourceUrl(input.sourceUrl);
+  const planFields = ["expectedIngredientCost", "plannedQuantity", "testDate", "targetSellingPrice"];
+  if (planFields.some((field) => field in input)) {
+    for (const field of planFields) {
+      if (!(field in input) || input[field] === "" || input[field] === null || input[field] === undefined) {
+        throw validationError("Complete expected cost, planned quantity, test date, and target selling price");
+      }
+    }
+  }
+  if ("expectedIngredientCost" in input) patch.expectedIngredientCost = nullableMoney(input.expectedIngredientCost, "Expected ingredient cost");
+  if ("plannedQuantity" in input) patch.plannedQuantity = nullableQuantity(input.plannedQuantity, "Planned quantity", false);
+  if ("testDate" in input) patch.testDate = nullableDate(input.testDate, "Test date");
+  if ("targetSellingPrice" in input) patch.targetSellingPrice = nullableMoney(input.targetSellingPrice, "Target selling price");
+  if ("testNotes" in input) patch.testNotes = optionalText(input.testNotes, 2000);
+  if ("actualQuantityProduced" in input) patch.actualQuantityProduced = nullableQuantity(input.actualQuantityProduced, "Actual quantity produced", true);
+  if ("actualQuantitySold" in input) patch.actualQuantitySold = nullableQuantity(input.actualQuantitySold, "Actual quantity sold", true);
+  if ("actualRevenue" in input) patch.actualRevenue = nullableMoney(input.actualRevenue, "Actual revenue");
+  if ("resultNotes" in input) patch.resultNotes = optionalText(input.resultNotes, 2000);
+  if ("testOutcome" in input) patch.testOutcome = nullableAllowed(input.testOutcome, TEST_OUTCOMES, "Final outcome");
+  const produced = patch.actualQuantityProduced ?? existing.actualQuantityProduced;
+  const sold = patch.actualQuantitySold ?? existing.actualQuantitySold;
+  if (produced !== null && produced !== undefined && sold !== null && sold !== undefined && sold > produced) {
+    throw validationError("Actual quantity sold cannot exceed actual quantity produced");
+  }
   return { ...existing, ...patch, updatedAt: options.now || new Date().toISOString() };
 }
 
@@ -202,6 +246,37 @@ function score(value, label, fallback) {
   return Math.round(result);
 }
 
+function nullableMoney(value, label) {
+  if (value === undefined || value === null || value === "") return null;
+  const result = Number(value);
+  if (!Number.isFinite(result) || result < 0 || result > 100_000_000) throw validationError(`${label} must be a valid non-negative amount`);
+  return Math.round((result + Number.EPSILON) * 100) / 100;
+}
+
+function nullableQuantity(value, label, allowZero) {
+  if (value === undefined || value === null || value === "") return null;
+  const result = Number(value);
+  const minimum = allowZero ? 0 : 1;
+  if (!Number.isInteger(result) || result < minimum || result > 1_000_000) {
+    throw validationError(`${label} must be a whole number${allowZero ? " of 0 or more" : " of 1 or more"}`);
+  }
+  return result;
+}
+
+function nullableDate(value, label) {
+  if (value === undefined || value === null || value === "") return null;
+  const text = String(value).trim();
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(text) || Number.isNaN(Date.parse(`${text}T00:00:00Z`))) {
+    throw validationError(`${label} must be a valid date`);
+  }
+  return text;
+}
+
+function nullableAllowed(value, values, label) {
+  if (value === undefined || value === null || value === "") return "";
+  return allowed(value, values, label);
+}
+
 function allowed(value, values, label) {
   const normalized = String(value || "").trim().toLowerCase();
   if (!values.includes(normalized)) throw validationError(`${label} is invalid`);
@@ -240,6 +315,6 @@ function clamp(value) { return Math.max(0, Math.min(100, value)); }
 function validationError(message) { const error = new Error(message); error.statusCode = 400; return error; }
 
 module.exports = {
-  CATEGORIES, STATUSES, SORTS, analyzeTrend, buildTrendSummary, filterAndSortTrends,
+  CATEGORIES, STATUSES, SORTS, TEST_OUTCOMES, analyzeTrend, buildTrendSummary, filterAndSortTrends,
   findDuplicate, normalizeTrendInput, normalizeTrendPatch, parseTrendQuery,
 };

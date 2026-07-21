@@ -205,10 +205,19 @@ function createSupabaseStorage(client) {
       return (await selectFoodTrends(client)).map(fromFoodTrendRow);
     },
     async upsertFoodTrend(value) {
-      await assertQuery(
-        client.from("food_trends").upsert(toFoodTrendRow(value), { onConflict: "id" }),
-        "save food trend",
-      );
+      try {
+        await assertQuery(
+          client.from("food_trends").upsert(toFoodTrendRow(value), { onConflict: "id" }),
+          "save food trend",
+        );
+      } catch (error) {
+        if (/expected_ingredient_cost|planned_quantity|test_date|target_selling_price|test_notes|actual_quantity|actual_revenue|result_notes|test_outcome|schema cache.*food_trends/i.test(error.message)) {
+          const missing = new Error("Trend testing is unavailable until the latest food_trends migration is applied");
+          missing.statusCode = 503;
+          throw missing;
+        }
+        throw error;
+      }
       return value;
     },
     async saveCollection(name, value) {
@@ -501,6 +510,16 @@ function toFoodTrendRow(item) {
     suggested_product: item.suggestedProduct || "",
     suggested_action: item.suggestedAction || "",
     analysis_reasoning: item.analysisReasoning || "",
+    expected_ingredient_cost: item.expectedIngredientCost ?? null,
+    planned_quantity: item.plannedQuantity ?? null,
+    test_date: item.testDate || null,
+    target_selling_price: item.targetSellingPrice ?? null,
+    test_notes: item.testNotes || "",
+    actual_quantity_produced: item.actualQuantityProduced ?? null,
+    actual_quantity_sold: item.actualQuantitySold ?? null,
+    actual_revenue: item.actualRevenue ?? null,
+    result_notes: item.resultNotes || "",
+    test_outcome: item.testOutcome || null,
     data_origin: item.dataOrigin || "manual",
     first_seen_at: item.firstSeenAt,
     last_seen_at: item.lastSeenAt,
@@ -524,6 +543,16 @@ function fromFoodTrendRow(row) {
     suggestedProduct: row.suggested_product || "",
     suggestedAction: row.suggested_action || "",
     analysisReasoning: row.analysis_reasoning || "",
+    expectedIngredientCost: row.expected_ingredient_cost === null || row.expected_ingredient_cost === undefined ? null : Number(row.expected_ingredient_cost),
+    plannedQuantity: row.planned_quantity === null || row.planned_quantity === undefined ? null : Number(row.planned_quantity),
+    testDate: row.test_date || "",
+    targetSellingPrice: row.target_selling_price === null || row.target_selling_price === undefined ? null : Number(row.target_selling_price),
+    testNotes: row.test_notes || "",
+    actualQuantityProduced: row.actual_quantity_produced === null || row.actual_quantity_produced === undefined ? null : Number(row.actual_quantity_produced),
+    actualQuantitySold: row.actual_quantity_sold === null || row.actual_quantity_sold === undefined ? null : Number(row.actual_quantity_sold),
+    actualRevenue: row.actual_revenue === null || row.actual_revenue === undefined ? null : Number(row.actual_revenue),
+    resultNotes: row.result_notes || "",
+    testOutcome: row.test_outcome || "",
     dataOrigin: row.data_origin || "manual",
     firstSeenAt: row.first_seen_at,
     lastSeenAt: row.last_seen_at,
