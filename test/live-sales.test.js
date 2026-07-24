@@ -8,6 +8,7 @@ const {
   createPollController,
   createSalesStateCoordinator,
   mergeSales,
+  runRenderers,
 } = require("../live-sales");
 const { createStorage } = require("../storage");
 
@@ -140,7 +141,7 @@ test("dashboard polling exposes recovery controls and refreshes all sale-depende
   const schema = fs.readFileSync(path.join(root, "supabase", "schema.sql"), "utf8");
   assert.match(schema, /sales_created_at_idx/);
   assert.match(schema, /sales_updated_at_idx/);
-  assert.match(html, /live-sales\.js\?v=2026-07-24-canonical-sales-state/);
+  assert.match(html, /live-sales\.js\?v=2026-07-24-sales-sync-regression/);
   assert.match(html, /id="sales-connection-status"/);
   assert.match(html, /id="sales-retry"/);
 });
@@ -223,6 +224,83 @@ test("canonical sales coordinator updates every sales-dependent model exactly on
   assert.equal(state.sales.length, 2);
   assert.equal(state.financials.revenueToday, 20);
   assert.equal(rendered.length, 1);
+});
+
+test("a failed redesigned widget cannot roll back canonical sales or block later renderers", () => {
+  const date = localDateKey(new Date());
+  let state = {
+    sales: [],
+    financials: { expensesThisMonth: 0 },
+    salesSummary: {},
+    counts: { sales: 0 },
+    productPerformance: [],
+  };
+  const rendered = [];
+  const rendererErrors = [];
+  const transactionErrors = [];
+  const coordinator = createSalesStateCoordinator({
+    getState: () => state,
+    setState: (next) => { state = next; },
+    render: () => runRenderers([
+      ["summary", () => rendered.push("summary")],
+      ["optional-chart", () => { throw new Error("chart target unavailable"); }],
+      ["sales-history", () => rendered.push("sales-history")],
+      ["product-performance", () => rendered.push("product-performance")],
+    ], {
+      onError: (name, error) => rendererErrors.push({ name, type: error.name }),
+    }),
+    onRenderError: (error) => transactionErrors.push(error),
+  });
+  const sales = [
+    { id: "sale-one", date, product: "Croissant", quantitySold: 2, saleAmount: 17.5, status: "completed" },
+    { id: "sale-two", date, product: "Baguette", quantitySold: 1, saleAmount: 8.25, status: "completed" },
+  ];
+
+  for (const sale of sales) {
+    const committed = coordinator.commit({
+      requestId: coordinator.beginRequest(),
+      update: { sales: [sale], cursor: new Date().toISOString() },
+      forceRender: true,
+    });
+    assert.equal(committed.applied, true);
+    assert.equal(committed.renderError, null);
+  }
+
+  assert.deepEqual(state.sales.map((sale) => sale.id).sort(), ["sale-one", "sale-two"]);
+  assert.equal(state.salesSummary.todaySales, 25.75);
+  assert.equal(state.salesSummary.totalTransactions, 2);
+  assert.deepEqual(state.productPerformance, [
+    { product: "Croissant", quantitySold: 2, revenue: 17.5 },
+    { product: "Baguette", quantitySold: 1, revenue: 8.25 },
+  ]);
+  assert.deepEqual(rendered, [
+    "summary", "sales-history", "product-performance",
+    "summary", "sales-history", "product-performance",
+  ]);
+  assert.deepEqual(rendererErrors, [
+    { name: "optional-chart", type: "Error" },
+    { name: "optional-chart", type: "Error" },
+  ]);
+  assert.deepEqual(transactionErrors, []);
+
+  const throwingCoordinator = createSalesStateCoordinator({
+    getState: () => state,
+    setState: (next) => { state = next; },
+    render: () => { throw new Error("unexpected outer renderer failure"); },
+    onRenderError: (error) => transactionErrors.push(error.name),
+  });
+  const third = throwingCoordinator.commit({
+    requestId: throwingCoordinator.beginRequest(),
+    update: {
+      sales: [{ id: "sale-three", date, product: "Tart", quantitySold: 1, saleAmount: 4, status: "completed" }],
+      cursor: new Date().toISOString(),
+    },
+  });
+  assert.equal(third.applied, true);
+  assert.equal(third.renderError.message, "unexpected outer renderer failure");
+  assert.equal(state.sales.length, 3);
+  assert.equal(state.salesSummary.todaySales, 29.75);
+  assert.deepEqual(transactionErrors, ["Error"]);
 });
 
 test("equal timestamps are retained and older responses cannot overwrite newer state", () => {

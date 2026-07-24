@@ -265,6 +265,7 @@ function startServer() {
         collections.sales = liveSales.map((item) => migrateRecord("sales", item));
         collections.inventory = liveInventory.map((item) => migrateRecord("inventory", item));
         console.log(`[square-test] dashboard sale count: ${collections.sales.length}`);
+        logSalesBoundary("dashboard.authoritative", collections.sales, { cursor: salesCursor });
         return sendJson(res, 200, { ...buildDashboard(), salesCursor }, noStoreHeaders());
       }
 
@@ -273,6 +274,11 @@ function startServer() {
         const cursor = new Date().toISOString();
         const updates = (await storage.loadSalesSince(since)).map((item) => migrateRecord("sales", item));
         collections.sales = mergeSales(collections.sales, updates).sales;
+        logSalesBoundary("updates.incremental", updates, {
+          cursor,
+          since,
+          authoritativeCount: collections.sales.length,
+        });
         return sendJson(res, 200, buildSalesUpdatePayload(updates, cursor), noStoreHeaders());
       }
 
@@ -576,6 +582,9 @@ async function createRecord(collectionName, req, res) {
     if (!canonicalSale) throw new Error("[storage] Persisted sale could not be verified");
     collections.sales = persistedSales;
     persistedRecord = canonicalSale;
+    logSalesBoundary("manual.persisted", [canonicalSale], {
+      authoritativeCount: collections.sales.length,
+    });
   }
   if (collectionName === "inventory") await recordIngredientPrice(record, "created");
   await logActivity(`${collectionName}.created`, `${recordLabel(collectionName, persistedRecord)} created`);
@@ -1200,6 +1209,22 @@ function buildSalesUpdatePayload(sales, cursor) {
     purchasingIntelligence: buildPurchasingDashboard(),
     ownerStatus: buildOwnerStatus(),
   };
+}
+
+function logSalesBoundary(boundary, sales, metadata = {}) {
+  console.log("[sales-sync]", {
+    boundary,
+    count: sales.length,
+    authoritativeCount: metadata.authoritativeCount ?? sales.length,
+    since: metadata.since || null,
+    cursor: metadata.cursor || null,
+    sales: sales.slice(0, 3).map((sale) => ({
+      id: sale.id,
+      source: sale.source || "manual",
+      date: sale.date,
+      timestamp: sale.soldAt || sale.updatedAt || sale.createdAt || null,
+    })),
+  });
 }
 
 function normalizeSalesCursor(value) {

@@ -147,6 +147,7 @@
     getState,
     setState,
     render = () => {},
+    onRenderError = () => {},
     now = () => new Date(),
   }) {
     if (typeof getState !== "function" || typeof setState !== "function") {
@@ -176,16 +177,25 @@
         }
         : applySalesUpdate(previous, update, { now: now() });
       setState(result.state);
-      try {
-        if (result.changed || forceRender || authoritative) {
-          render({ state: result.state, update, authoritative });
-        }
-      } catch (error) {
-        setState(previous);
-        throw error;
-      }
       latestCommittedRequestId = requestId;
-      return { applied: true, changed: result.changed, stale: false, requestId, state: result.state };
+      let renderError = null;
+      if (result.changed || forceRender || authoritative) {
+        try {
+          render({ state: result.state, update, authoritative });
+        } catch (error) {
+          renderError = error;
+          try { onRenderError(error, { state: result.state, update, authoritative, requestId }); }
+          catch { /* Diagnostics must never invalidate committed sales state. */ }
+        }
+      }
+      return {
+        applied: true,
+        changed: result.changed,
+        stale: false,
+        requestId,
+        state: result.state,
+        renderError,
+      };
     }
 
     function supersede(requestId) {
@@ -198,6 +208,20 @@
     }
 
     return { beginRequest, commit, state, supersede };
+  }
+
+  function runRenderers(renderers, { onError = () => {} } = {}) {
+    const errors = [];
+    for (const [name, renderer] of renderers) {
+      try {
+        renderer();
+      } catch (error) {
+        errors.push({ name, error });
+        try { onError(name, error); }
+        catch { /* Renderer diagnostics are deliberately best effort. */ }
+      }
+    }
+    return errors;
   }
 
   function isRevenueSale(sale) {
@@ -354,5 +378,6 @@
     createSalesStateCoordinator,
     mergeSales,
     recalculateSalesState,
+    runRenderers,
   };
 }));

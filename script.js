@@ -44,6 +44,9 @@ const salesStateCoordinator = globalThis.BakeryLiveSales?.createSalesStateCoordi
     getState: () => appData,
     setState: (state) => { appData = state; },
     render: renderCommittedSalesState,
+    onRenderError: (error, context) => {
+      reportSalesDiagnostic("render-transaction", error, context.state);
+    },
   })
   : {
     beginRequest: () => 1,
@@ -918,37 +921,66 @@ function renderDashboard() {
 function renderSalesDependentViews() {
   const financials = appData.financials;
   const summary = appData.salesSummary;
-  setText("#summary-today", money.format(summary.todaySales));
-  setText("#summary-week", money.format(summary.weekSales));
-  setText("#summary-month", money.format(summary.monthSales));
-  setText("#summary-average", money.format(summary.averageTicket));
-  setText("#summary-transactions", numberFormat.format(summary.totalTransactions));
-  setText("#sales-refreshed-at", `Updated ${formatDateTime(appData.updatedAt)} - checks every 12 seconds`);
-  renderSalesHistory("#dashboard-sales-history", 9, false);
-  setText("#revenue-today", money.format(financials.revenueToday));
-  setText("#revenue-month", money.format(financials.revenueThisMonth));
-  setText("#estimated-profit", money.format(financials.estimatedProfit));
-  renderTodayAtGlance();
-  renderSalesChart(appData.sales);
-  renderCompactList(
-    "#top-products",
-    appData.productPerformance.slice(0, 5).map((item) => ({
-      title: item.product,
-      detail: `${numberFormat.format(item.quantitySold)} sold`,
-      value: money.format(item.revenue),
+  const renderers = [
+    ["summary", () => {
+      setText("#summary-today", money.format(summary.todaySales));
+      setText("#summary-week", money.format(summary.weekSales));
+      setText("#summary-month", money.format(summary.monthSales));
+      setText("#summary-average", money.format(summary.averageTicket));
+      setText("#summary-transactions", numberFormat.format(summary.totalTransactions));
+      setText("#sales-refreshed-at", `Updated ${formatDateTime(appData.updatedAt)} - checks every 12 seconds`);
+    }],
+    ["dashboard-history", () => renderSalesHistory("#dashboard-sales-history", 9, false)],
+    ["financials", () => {
+      setText("#revenue-today", money.format(financials.revenueToday));
+      setText("#revenue-month", money.format(financials.revenueThisMonth));
+      setText("#estimated-profit", money.format(financials.estimatedProfit));
+    }],
+    ["today-at-a-glance", renderTodayAtGlance],
+    ["sales-chart", () => renderSalesChart(appData.sales)],
+    ["top-products", () => renderCompactList(
+      "#top-products",
+      appData.productPerformance.slice(0, 5).map((item) => ({
+        title: item.product,
+        detail: `${numberFormat.format(item.quantitySold)} sold`,
+        value: money.format(item.revenue),
+      })),
+      "No sales recorded yet",
+    )],
+    ["recent-sales", () => renderCompactList(
+      "#dashboard-sales",
+      appData.sales.slice(0, 5).map((item) => ({
+        title: item.product,
+        detail: formatDate(item.date),
+        value: money.format(item.saleAmount),
+      })),
+      "No sales recorded yet",
+    )],
+    ["sales-page", renderSales],
+  ];
+  const runRenderers = globalThis.BakeryLiveSales?.runRenderers
+    || ((items, { onError }) => items.forEach(([name, renderer]) => {
+      try { renderer(); } catch (error) { onError(name, error); }
+    }));
+  runRenderers(renderers, {
+    onError: (renderer, error) => reportSalesDiagnostic(renderer, error, appData),
+  });
+}
+
+function reportSalesDiagnostic(renderer, error, state = appData) {
+  const latestSales = Array.isArray(state?.sales) ? state.sales.slice(0, 3) : [];
+  console.warn("[sales-sync] renderer failed", {
+    renderer,
+    errorType: error?.name || "Error",
+    salesCount: Array.isArray(state?.sales) ? state.sales.length : 0,
+    cursor: salesCursor || null,
+    sales: latestSales.map((sale) => ({
+      id: sale.id,
+      source: sale.source || "manual",
+      date: sale.date,
+      timestamp: sale.soldAt || sale.updatedAt || sale.createdAt || null,
     })),
-    "No sales recorded yet",
-  );
-  renderCompactList(
-    "#dashboard-sales",
-    appData.sales.slice(0, 5).map((item) => ({
-      title: item.product,
-      detail: formatDate(item.date),
-      value: money.format(item.saleAmount),
-    })),
-    "No sales recorded yet",
-  );
-  renderSales();
+  });
 }
 
 function renderTodayAtGlance() {

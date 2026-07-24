@@ -5,7 +5,7 @@ const http = require("node:http");
 const path = require("node:path");
 const test = require("node:test");
 
-test("manual sale persists, logs activity, and flows through live sales updates", async (context) => {
+test("two manual sales persist, log activity, poll exactly once, and reconcile authoritatively", async (context) => {
   const dataDir = fs.mkdtempSync(path.join(__dirname, ".bakeryops-live-sale-"));
   context.after(() => fs.rmSync(dataDir, { recursive: true, force: true }));
   const child = spawn(process.execPath, [path.join(__dirname, "..", "server.js")], {
@@ -28,44 +28,78 @@ test("manual sale persists, logs activity, and flows through live sales updates"
 
   const initial = await requestJson(port, "/api/dashboard");
   assert.equal(initial.status, 200);
-  const product = `Owner regression ${Date.now()}`;
-  const sale = await requestJson(port, "/api/sales", {
+  const products = [`Owner croissant ${Date.now()}`, `Owner baguette ${Date.now()}`];
+  const firstSale = await requestJson(port, "/api/sales", {
     method: "POST",
     body: {
       date: localDateKey(new Date()),
-      product,
+      product: products[0],
       quantitySold: 2,
       saleAmount: 17.5,
     },
   });
-  assert.equal(sale.status, 201);
-  assert.ok(sale.body.id);
-  assert.ok(sale.body.createdAt);
+  const secondSale = await requestJson(port, "/api/sales", {
+    method: "POST",
+    body: {
+      date: localDateKey(new Date()),
+      product: products[1],
+      quantitySold: 1,
+      saleAmount: 8.25,
+    },
+  });
+  for (const sale of [firstSale, secondSale]) {
+    assert.equal(sale.status, 201);
+    assert.ok(sale.body.id);
+    assert.ok(sale.body.createdAt);
+  }
+  assert.notEqual(firstSale.body.id, secondSale.body.id);
 
   const activity = await requestJson(port, "/api/activity");
   assert.equal(activity.status, 200);
-  assert.ok(activity.body.some((entry) =>
-    entry.action === "sales.created" && entry.description === `Sale for ${product} created`,
-  ));
+  for (const product of products) {
+    assert.equal(activity.body.filter((entry) =>
+      entry.action === "sales.created" && entry.description === `Sale for ${product} created`,
+    ).length, 1);
+  }
 
   const since = new Date(Date.parse(initial.body.salesCursor) - 60_000).toISOString();
   const updates = await requestJson(port, `/api/sales/updates?since=${encodeURIComponent(since)}`);
   assert.equal(updates.status, 200);
-  assert.equal(updates.body.sales.filter((item) => item.id === sale.body.id).length, 1);
-  assert.equal(updates.body.salesSummary.todaySales, 17.5);
-  assert.equal(updates.body.financials.revenueToday, 17.5);
-  assert.equal(updates.body.salesCount, 1);
+  for (const sale of [firstSale, secondSale]) {
+    assert.equal(updates.body.sales.filter((item) => item.id === sale.body.id).length, 1);
+  }
+  assert.equal(updates.body.salesSummary.todaySales, 25.75);
+  assert.equal(updates.body.salesSummary.totalTransactions, 2);
+  assert.equal(updates.body.salesSummary.averageTicket, 12.88);
+  assert.equal(updates.body.financials.revenueToday, 25.75);
+  assert.equal(updates.body.salesCount, 2);
   assert.deepEqual(updates.body.productPerformance, [
-    { product, quantitySold: 2, revenue: 17.5 },
+    { product: products[0], quantitySold: 2, revenue: 17.5 },
+    { product: products[1], quantitySold: 1, revenue: 8.25 },
   ]);
 
   const repeated = await requestJson(port, `/api/sales/updates?since=${encodeURIComponent(since)}`);
   assert.equal(repeated.status, 200);
-  assert.equal(repeated.body.sales.filter((item) => item.id === sale.body.id).length, 1);
-  assert.equal(repeated.body.salesSummary.todaySales, 17.5);
+  for (const sale of [firstSale, secondSale]) {
+    assert.equal(repeated.body.sales.filter((item) => item.id === sale.body.id).length, 1);
+  }
+  assert.equal(repeated.body.salesSummary.todaySales, 25.75);
+  assert.equal(repeated.body.salesCount, 2);
 
   const persisted = JSON.parse(fs.readFileSync(path.join(dataDir, "sales.json"), "utf8"));
-  assert.equal(persisted.filter((item) => item.id === sale.body.id).length, 1);
+  for (const sale of [firstSale, secondSale]) {
+    assert.equal(persisted.filter((item) => item.id === sale.body.id).length, 1);
+  }
+
+  const reconciled = await requestJson(port, "/api/dashboard");
+  assert.equal(reconciled.status, 200);
+  for (const sale of [firstSale, secondSale]) {
+    assert.equal(reconciled.body.sales.filter((item) => item.id === sale.body.id).length, 1);
+  }
+  assert.equal(reconciled.body.salesSummary.todaySales, 25.75);
+  assert.equal(reconciled.body.salesSummary.totalTransactions, 2);
+  assert.equal(reconciled.body.financials.revenueToday, 25.75);
+  assert.deepEqual(reconciled.body.productPerformance, updates.body.productPerformance);
 });
 
 function waitForPort(child) {
