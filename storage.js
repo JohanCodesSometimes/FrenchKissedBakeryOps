@@ -740,4 +740,4 @@ function writeJsonAtomic(filePath, value) {
   fs.renameSync(tempPath, filePath);
 }
 
-module.exports = { createStorage };
+module.exports = { createStorage, latestRecordTimestamp };

@@ -10,7 +10,7 @@ const {
   mergeSales,
   runRenderers,
 } = require("../live-sales");
-const { createStorage } = require("../storage");
+const { createStorage, latestRecordTimestamp } = require("../storage");
 
 test("live sales merge adds updates and prevents duplicate rows", () => {
   const original = [{ id: "sale-1", product: "Bread", saleAmount: 8, createdAt: "2026-06-27T10:00:00Z" }];
@@ -81,9 +81,18 @@ test("poll controller prevents overlap, reports offline, and recovers", async ()
   assert.equal(pollCalls, 5);
 });
 
-test("sales polling queries only rows created or updated after its cursor", async () => {
+test("sales polling maps Supabase timestamps used by server response builders", async () => {
   const since = "2026-06-27T10:00:00.000Z";
-  const rows = [{ id: "sale-2", date: "2026-06-27", product: "Cookie", quantity_sold: 1, sale_amount: 4, created_at: "2026-06-27T10:01:00Z" }];
+  const rows = [{
+    id: "sale-2",
+    date: "2026-06-27",
+    product: "Cookie",
+    quantity_sold: 1,
+    sale_amount: 4,
+    source: "square",
+    created_at: "2026-06-27T10:01:00Z",
+    updated_at: "2026-06-27T10:02:00Z",
+  }];
   const client = {
     from(table) {
       assert.equal(table, "sales");
@@ -115,6 +124,9 @@ test("sales polling queries only rows created or updated after its cursor", asyn
   const updates = await storage.loadSalesSince(since);
   assert.equal(updates.length, 1);
   assert.equal(updates[0].product, "Cookie");
+  assert.equal(updates[0].createdAt, "2026-06-27T10:01:00Z");
+  assert.equal(updates[0].updatedAt, "2026-06-27T10:02:00Z");
+  assert.equal(latestRecordTimestamp(updates[0]), "2026-06-27T10:02:00Z");
 });
 
 test("dashboard polling exposes recovery controls and refreshes all sale-dependent views", () => {
