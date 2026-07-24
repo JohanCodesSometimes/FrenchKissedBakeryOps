@@ -79,7 +79,7 @@ function createLocalStorage(dataDir) {
     },
     async loadSalesSince(since) {
       return loadArray(path.join(resolvedDir, "sales.json")).filter((sale) =>
-        latestRecordTimestamp(sale) > since,
+        latestRecordTimestamp(sale) >= since,
       );
     },
     async loadPriceHistory() {
@@ -276,7 +276,7 @@ async function selectAll(client, table, orderColumn = "created_at", ascending = 
 }
 
 async function selectSalesSince(client, since) {
-  const filter = `created_at.gt.${since},updated_at.gt.${since}`;
+  const filter = `created_at.gte.${since},updated_at.gte.${since}`;
   const { data, error } = await client
     .from("sales")
     .select("*")

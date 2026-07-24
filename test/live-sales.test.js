@@ -2,7 +2,13 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
-const { boundedBackoffDelay, createPollController, mergeSales } = require("../live-sales");
+const {
+  boundedBackoffDelay,
+  buildDailyRevenue,
+  createPollController,
+  createSalesStateCoordinator,
+  mergeSales,
+} = require("../live-sales");
 const { createStorage } = require("../storage");
 
 test("live sales merge adds updates and prevents duplicate rows", () => {
@@ -85,7 +91,7 @@ test("sales polling queries only rows created or updated after its cursor", asyn
           assert.equal(columns, "*");
           return {
             or(filter) {
-              assert.equal(filter, `created_at.gt.${since},updated_at.gt.${since}`);
+              assert.equal(filter, `created_at.gte.${since},updated_at.gte.${since}`);
               return {
                 async order(column, options) {
                   assert.equal(column, "created_at");
@@ -134,7 +140,187 @@ test("dashboard polling exposes recovery controls and refreshes all sale-depende
   const schema = fs.readFileSync(path.join(root, "supabase", "schema.sql"), "utf8");
   assert.match(schema, /sales_created_at_idx/);
   assert.match(schema, /sales_updated_at_idx/);
-  assert.match(html, /live-sales\.js\?v=2026-07-18-live-sales-recovery/);
+  assert.match(html, /live-sales\.js\?v=2026-07-24-canonical-sales-state/);
   assert.match(html, /id="sales-connection-status"/);
   assert.match(html, /id="sales-retry"/);
 });
+
+test("canonical sales coordinator updates every sales-dependent model exactly once", () => {
+  const now = new Date(2026, 6, 24, 12);
+  const date = "2026-07-24";
+  let state = {
+    sales: [{
+      id: "sale-1",
+      date,
+      product: "Croissant",
+      quantitySold: 1,
+      saleAmount: 8,
+      status: "completed",
+      createdAt: "2026-07-24T10:00:00.000Z",
+    }],
+    financials: { revenueToday: 8, revenueThisWeek: 8, revenueThisMonth: 8, expensesThisMonth: 3, estimatedProfit: 5 },
+    salesSummary: { todaySales: 8, weekSales: 8, monthSales: 8, averageTicket: 8, totalTransactions: 1 },
+    counts: { sales: 1 },
+    productPerformance: [{ product: "Croissant", quantitySold: 1, revenue: 8 }],
+    updatedAt: "2026-07-24T10:00:00.000Z",
+  };
+  const rendered = [];
+  const coordinator = createSalesStateCoordinator({
+    getState: () => state,
+    setState: (next) => { state = next; },
+    now: () => now,
+    render: ({ state: renderedState }) => {
+      rendered.push({
+        revenue: renderedState.financials.revenueToday,
+        todaySales: renderedState.salesSummary.todaySales,
+        recentSales: renderedState.sales.map((sale) => sale.product),
+        chart: buildDailyRevenue(renderedState.sales, now).at(-1).total,
+        products: renderedState.productPerformance,
+      });
+    },
+  });
+  const requestId = coordinator.beginRequest();
+  const canonicalSale = {
+    id: "sale-2",
+    date,
+    product: "Baguette",
+    quantitySold: 2,
+    saleAmount: 12,
+    status: "completed",
+    createdAt: "2026-07-24T10:01:00.000Z",
+  };
+
+  const first = coordinator.commit({
+    requestId,
+    update: { sales: [canonicalSale], cursor: "2026-07-24T10:01:01.000Z" },
+  });
+  assert.equal(first.applied, true);
+  assert.equal(state.sales.length, 2);
+  assert.equal(state.financials.revenueToday, 20);
+  assert.equal(state.salesSummary.todaySales, 20);
+  assert.equal(state.salesSummary.totalTransactions, 2);
+  assert.deepEqual(state.productPerformance, [
+    { product: "Baguette", quantitySold: 2, revenue: 12 },
+    { product: "Croissant", quantitySold: 1, revenue: 8 },
+  ]);
+  assert.deepEqual(rendered.at(-1), {
+    revenue: 20,
+    todaySales: 20,
+    recentSales: ["Baguette", "Croissant"],
+    chart: 20,
+    products: [
+      { product: "Baguette", quantitySold: 2, revenue: 12 },
+      { product: "Croissant", quantitySold: 1, revenue: 8 },
+    ],
+  });
+
+  const overlapRequest = coordinator.beginRequest();
+  const repeated = coordinator.commit({
+    requestId: overlapRequest,
+    update: { sales: [canonicalSale], cursor: "2026-07-24T10:01:13.000Z" },
+  });
+  assert.equal(repeated.changed, false);
+  assert.equal(state.sales.length, 2);
+  assert.equal(state.financials.revenueToday, 20);
+  assert.equal(rendered.length, 1);
+});
+
+test("equal timestamps are retained and older responses cannot overwrite newer state", () => {
+  const timestamp = "2026-07-24T12:00:00.000Z";
+  const equalTimestampSales = mergeSales([], [
+    { id: "sale-a", date: "2026-07-24", product: "A", saleAmount: 3, createdAt: timestamp },
+    { id: "sale-b", date: "2026-07-24", product: "B", saleAmount: 4, createdAt: timestamp },
+  ]);
+  assert.equal(equalTimestampSales.sales.length, 2);
+
+  let state = {
+    sales: [],
+    financials: { expensesThisMonth: 0 },
+    salesSummary: {},
+    counts: { sales: 0 },
+    productPerformance: [],
+  };
+  const coordinator = createSalesStateCoordinator({
+    getState: () => state,
+    setState: (next) => { state = next; },
+  });
+  const olderRequest = coordinator.beginRequest();
+  const newerRequest = coordinator.beginRequest();
+  coordinator.commit({
+    requestId: newerRequest,
+    update: {
+      sales: [{ id: "new-sale", date: localDateKey(new Date()), product: "New", quantitySold: 1, saleAmount: 9 }],
+      cursor: "2026-07-24T12:00:02.000Z",
+    },
+  });
+  const stale = coordinator.commit({
+    requestId: olderRequest,
+    update: {
+      sales: [],
+      financials: { revenueToday: 0, expensesThisMonth: 0 },
+      salesSummary: { todaySales: 0 },
+      counts: { sales: 0 },
+      productPerformance: [],
+    },
+    authoritative: true,
+  });
+  assert.equal(stale.stale, true);
+  assert.deepEqual(state.sales.map((sale) => sale.id), ["new-sale"]);
+});
+
+test("refund and cancellation updates replace the sale without duplicate revenue", () => {
+  const date = localDateKey(new Date());
+  const base = {
+    sales: [],
+    financials: { expensesThisMonth: 0 },
+    salesSummary: {},
+    counts: { sales: 0 },
+    productPerformance: [],
+  };
+  let state = base;
+  const coordinator = createSalesStateCoordinator({
+    getState: () => state,
+    setState: (next) => { state = next; },
+  });
+  const sale = {
+    id: "square-sale",
+    date,
+    product: "Cake",
+    quantitySold: 2,
+    grossAmount: 20,
+    saleAmount: 20,
+    refundedAmount: 0,
+    status: "completed",
+    source: "square",
+  };
+  coordinator.commit({ requestId: coordinator.beginRequest(), update: { sales: [sale] } });
+  coordinator.commit({
+    requestId: coordinator.beginRequest(),
+    update: { sales: [{ ...sale, saleAmount: 15, refundedAmount: 5, status: "partially_refunded", updatedAt: "2026-07-24T12:01:00Z" }] },
+  });
+  assert.equal(state.sales.length, 1);
+  assert.equal(state.salesSummary.todaySales, 15);
+  assert.deepEqual(state.productPerformance, [{ product: "Cake", quantitySold: 1.5, revenue: 15 }]);
+
+  coordinator.commit({
+    requestId: coordinator.beginRequest(),
+    update: { sales: [{ ...sale, saleAmount: 0, refundedAmount: 20, status: "refunded", updatedAt: "2026-07-24T12:02:00Z" }] },
+  });
+  assert.equal(state.sales.length, 1);
+  assert.equal(state.salesSummary.todaySales, 0);
+  assert.deepEqual(state.productPerformance, []);
+
+  coordinator.commit({
+    requestId: coordinator.beginRequest(),
+    update: { sales: [{ ...sale, saleAmount: 0, status: "canceled", updatedAt: "2026-07-24T12:03:00Z" }] },
+  });
+  assert.equal(state.sales.length, 1);
+  assert.equal(state.salesSummary.totalTransactions, 0);
+});
+
+function localDateKey(date) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}

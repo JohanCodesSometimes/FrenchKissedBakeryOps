@@ -22,6 +22,7 @@ let customerInsights = null;
 let activeView = "dashboard-view";
 let dashboardRefreshPromise = null;
 let salesCursor = "";
+let salesReconciliationRequired = true;
 let squareStatusData = null;
 let healthStatusData = null;
 let squareStatusRequest = null;
@@ -37,6 +38,21 @@ const salesPollController = globalThis.BakeryLiveSales?.createPollController
     maxDelay: SALES_POLL_MAX_BACKOFF_MS,
   })
   : inertPollController;
+const salesStateCoordinator = globalThis.BakeryLiveSales?.createSalesStateCoordinator
+  ? globalThis.BakeryLiveSales.createSalesStateCoordinator({
+    getState: () => appData,
+    setState: (state) => { appData = state; },
+    render: renderCommittedSalesState,
+  })
+  : {
+    beginRequest: () => 1,
+    commit: ({ update, authoritative }) => {
+      if (authoritative) appData = update;
+      renderAll();
+      return { applied: true, changed: true, stale: false };
+    },
+    supersede() {},
+  };
 const contactsPollController = globalThis.BakeryContactsPolling?.createPollController
   ? globalThis.BakeryContactsPolling.createPollController({ poll: refreshCustomers, interval: 30_000 })
   : inertPollController;
@@ -83,6 +99,7 @@ function initialize() {
   updateContactsPolling({ refresh: false });
   document.addEventListener("visibilitychange", handlePageVisibility);
   window.addEventListener("pagehide", () => {
+    salesReconciliationRequired = true;
     systemStatusController?.stop();
     salesPollController.stop();
     contactsPollController.stop();
@@ -737,7 +754,10 @@ function disconnectSquare(event) {
 
 function handlePageVisibility() {
   updateContactsPolling({ refresh: !document.hidden && activeView === "customers-view" });
-  if (document.hidden) return salesPollController.stop();
+  if (document.hidden) {
+    salesReconciliationRequired = true;
+    return salesPollController.stop();
+  }
   retryLiveSales();
 }
 
@@ -748,38 +768,45 @@ function retryLiveSales() {
 
 async function pollSalesUpdates() {
   if (document.hidden) return;
-  if (!appData || !salesCursor) {
-    if (!await refreshDashboard({ showError: false })) throw new Error("Dashboard recovery failed");
+  try {
+    if (salesReconciliationRequired || !appData || !salesCursor) {
+      if (!await refreshDashboard({ showError: false })) throw new Error("Dashboard recovery failed");
+      salesReconciliationRequired = false;
+      return;
+    }
+    const requestId = salesStateCoordinator.beginRequest();
+    const pollSince = new Date(Date.parse(salesCursor) - SALES_POLL_OVERLAP_MS).toISOString();
+    const response = await fetch(`/api/sales/updates?since=${encodeURIComponent(pollSince)}`, {
+      credentials: "same-origin",
+      cache: "no-store",
+    });
+    if (!response.ok) throw new Error(`Sales polling failed (${response.status})`);
+    const update = await response.json();
+    const committed = salesStateCoordinator.commit({
+      requestId,
+      update,
+      forceRender: Boolean(update.salesSummary),
+    });
+    if (committed.applied) salesCursor = update.cursor || salesCursor;
+  } catch (error) {
+    salesReconciliationRequired = true;
+    throw error;
+  }
+}
+
+function renderCommittedSalesState({ update, authoritative }) {
+  if (authoritative) {
+    renderAll();
     return;
   }
-  const pollSince = new Date(Date.parse(salesCursor) - SALES_POLL_OVERLAP_MS).toISOString();
-  const response = await fetch(`/api/sales/updates?since=${encodeURIComponent(pollSince)}`, {
-    credentials: "same-origin",
-    cache: "no-store",
-  });
-  if (!response.ok) throw new Error(`Sales polling failed (${response.status})`);
-  const update = await response.json();
-  salesCursor = update.cursor || salesCursor;
-  if (!update.sales?.length) return;
-
-  const merged = BakeryLiveSales.mergeSales(appData.sales, update.sales);
-  if (!merged.changed) return;
-  appData.sales = merged.sales;
-  appData.salesSummary = update.salesSummary;
-  Object.assign(appData.financials, update.financials);
-  appData.counts.sales = update.salesCount;
-  appData.productPerformance = update.productPerformance;
-  appData.updatedAt = update.cursor;
-  if (update.inventory) appData.inventory = update.inventory;
   if (update.customers) {
     customersData = sortCustomerRows(update.customers);
     customerInsights = update.customerInsights;
   }
-  renderDashboard();
+  renderSalesDependentViews();
   if (update.inventory) renderInventory();
   if (update.customers) renderCustomers();
   if (update.purchasingIntelligence) renderShoppingList(update.purchasingIntelligence);
-  if (update.ownerStatus) appData.ownerStatus = update.ownerStatus;
   renderSystemStatus();
 }
 
@@ -812,19 +839,27 @@ function sortCustomerRows(rows) {
 function refreshDashboard({ showError = true } = {}) {
   if (document.hidden) return Promise.resolve(false);
   if (dashboardRefreshPromise) return dashboardRefreshPromise;
+  const requestId = salesStateCoordinator.beginRequest();
   const request = (async () => {
     try {
       const response = await fetch("/api/dashboard", { credentials: "same-origin", cache: "no-store" });
       if (!response.ok) throw new Error("Could not load dashboard data");
-      appData = await response.json();
+      const dashboard = await response.json();
+      const committed = salesStateCoordinator.commit({
+        requestId,
+        update: dashboard,
+        authoritative: true,
+      });
+      if (!committed.applied) return false;
       ownerStatusUnavailable = false;
-      salesCursor = appData.salesCursor || appData.updatedAt || salesCursor;
-      renderAll();
+      salesReconciliationRequired = false;
+      salesCursor = dashboard.salesCursor || dashboard.updatedAt || salesCursor;
       clearSectionError("dashboard-view");
       renderLiveSalesStatus({ state: "live" });
       renderSystemStatus();
       return true;
     } catch (error) {
+      salesReconciliationRequired = true;
       if (showError) showSectionError("dashboard-view", "Dashboard data could not load.", error.message);
       renderSystemStatus();
       return false;
@@ -1070,6 +1105,7 @@ function bindCrudForm(formId, collection, successMessage, payloadBuilder = defau
       const id = fields.id;
       delete fields.id;
       const payload = payloadBuilder(fields, form);
+      const salesRequestId = collection === "sales" ? salesStateCoordinator.beginRequest() : 0;
       const response = await fetch(id ? `/api/${collection}/${encodeURIComponent(id)}` : `/api/${collection}`, {
         method: id ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
@@ -1077,9 +1113,22 @@ function bindCrudForm(formId, collection, successMessage, payloadBuilder = defau
       });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Could not save record");
+      if (collection === "sales") {
+        if (appData) {
+          salesStateCoordinator.commit({
+            requestId: salesRequestId,
+            update: { sales: [result], cursor: result.updatedAt || result.createdAt || salesCursor },
+            forceRender: true,
+          });
+        } else {
+          salesStateCoordinator.supersede(salesRequestId);
+          salesReconciliationRequired = true;
+        }
+      }
       form.closest("dialog").close();
       showNotice(successMessage, "success");
       await refreshAllData();
+      if (collection === "sales") retryLiveSales();
     } catch (error) {
       showNotice(error.message, "error");
     } finally {
@@ -1285,17 +1334,7 @@ function renderSalesChart(sales) {
 }
 
 function buildDailyRevenue(sales) {
-  const days = [];
-  for (let index = 6; index >= 0; index -= 1) {
-    const date = new Date();
-    date.setDate(date.getDate() - index);
-    days.push({ key: localDateKey(date), label: date.toLocaleDateString(undefined, { weekday: "short" }), total: 0 });
-  }
-  sales.forEach((sale) => {
-    const day = days.find((item) => item.key === sale.date);
-    if (day) day.total += sale.saleAmount;
-  });
-  return days;
+  return BakeryLiveSales.buildDailyRevenue(sales, new Date());
 }
 
 function renderCompactList(selector, items, emptyTitle) {

@@ -550,10 +550,23 @@ async function createRecord(collectionName, req, res) {
     createdAt: new Date().toISOString(),
   });
   collections[collectionName].unshift(record);
-  await saveCollection(collectionName);
+  try {
+    await saveCollection(collectionName);
+  } catch (error) {
+    collections[collectionName] = collections[collectionName].filter((item) => item.id !== record.id);
+    throw error;
+  }
+  let persistedRecord = record;
+  if (collectionName === "sales") {
+    const persistedSales = (await storage.loadCollection("sales")).map((item) => migrateRecord("sales", item));
+    const canonicalSale = persistedSales.find((item) => item.id === record.id);
+    if (!canonicalSale) throw new Error("[storage] Persisted sale could not be verified");
+    collections.sales = persistedSales;
+    persistedRecord = canonicalSale;
+  }
   if (collectionName === "inventory") await recordIngredientPrice(record, "created");
-  await logActivity(`${collectionName}.created`, `${recordLabel(collectionName, record)} created`);
-  sendJson(res, 201, enrichRecord(collectionName, record));
+  await logActivity(`${collectionName}.created`, `${recordLabel(collectionName, persistedRecord)} created`);
+  sendJson(res, 201, enrichRecord(collectionName, persistedRecord), noStoreHeaders());
 }
 
 async function parseReceiptUpload(req, res) {
@@ -857,6 +870,7 @@ function normalizeRecord(collectionName, input, metadata) {
       grossAmount: saleAmount,
       refundedAmount: 0,
       status: "completed",
+      source: "manual",
     };
   }
 
