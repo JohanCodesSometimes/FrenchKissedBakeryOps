@@ -29,6 +29,7 @@ BAKERYOPS_PASSWORD=<strong password>
 NODE_ENV=production
 HOST=0.0.0.0
 OPENAI_API_KEY=<OpenAI API key>
+YOUTUBE_API_KEY=<server-only YouTube Data API v3 key>
 SUPABASE_URL=https://your-project.supabase.co
 SUPABASE_ANON_KEY=<project anon key>
 SUPABASE_SERVICE_ROLE_KEY=<server-only service role key>
@@ -140,12 +141,26 @@ Writes use a temporary file and rename step. Existing records from the previous 
 - Lightweight 12-second sales polling that updates dashboard KPIs, charts, tables, inventory, customer intelligence, and purchasing forecasts without reloading
 - Live, Reconnecting, and Offline status with manual retry, visibility recovery, overlap prevention, and capped exponential backoff
 - OpenAI Vision receipt extraction with editable review and approval
-- Trend Finder with manual curation, filtering, deterministic bakery scoring, recommendations, and owner-recorded test plans and results
+- Trend Finder with manual curation, optional cached YouTube discovery, explainable bakery scoring, recommendations, and owner-recorded test plans and results
 - Contacts refresh lifecycle that runs only while Contacts is active and the browser tab is visible
 
-## TikTok Food Trend Finder
+## Food Trend Finder
 
-Trend Finder helps the owner capture food ideas observed on TikTok or elsewhere, compare their bakery fit, and turn promising ideas into small, measurable product tests. It does **not** scrape TikTok, authenticate with TikTok, extract data from pasted links, or represent a live TikTok feed. Records are labeled as manually curated, demo samples, or configured-provider data, and source links are references only.
+Trend Finder helps the owner capture food ideas observed on TikTok or elsewhere, compare their bakery fit, and turn promising ideas into small, measurable product tests. It does **not** scrape TikTok, authenticate with TikTok, or extract data from pasted links. Owner-entered records remain separate from optional public YouTube discovery.
+
+### Optional YouTube discovery
+
+YouTube discovery uses the official YouTube Data API v3 entirely on the Node server. It searches a small rotating set of bakery topics, batches video statistics, normalizes public metadata, and keeps a six-hour in-memory cache. Manual refreshes are rate-bounded and overlapping refreshes share one request. Missing credentials, timeouts, quota errors, permission errors, rate limits, and malformed responses remain isolated from curated trends and the rest of BakeryOps.
+
+1. In a Google Cloud project, enable the [YouTube Data API v3](https://developers.google.com/youtube/v3/getting-started).
+2. Create an API key and restrict it to the YouTube Data API v3. Apply any environment or application restrictions appropriate for the server hosting BakeryOps.
+3. Store the key only as the server environment variable below; never add it to frontend files or commit a real value.
+
+```text
+YOUTUBE_API_KEY=<server-only API key>
+```
+
+The adapter uses [`search.list`](https://developers.google.com/youtube/v3/docs/search/list) for bounded discovery followed by a batched [`videos.list`](https://developers.google.com/youtube/v3/docs/videos/list) statistics request. Search is quota-intensive, so the cache and refresh limit are intentional. No live request is required for local tests.
 
 ### Apply the Supabase migration
 
@@ -157,9 +172,9 @@ The database starts empty. Run `npm run seed:trends` to add eight clearly labele
 
 ### Scoring
 
-**Analyze** runs deterministic local logic and does not require OpenAI. Relevance and opportunity scores range from 0–100 and consider bakery/category keywords, visual presentation, production difficulty, current inventory matches, seasonal timing, premium/margin signals, and the manually entered engagement signal. Scores are decision support, not verified market demand.
+**Analyze** runs deterministic local logic and does not require OpenAI. Relevance and opportunity scores range from 0–100 and consider bakery/category keywords, visual presentation, production difficulty, current inventory matches, seasonal timing, premium/margin signals, and the manually entered engagement signal.
 
-Trend Finder adds no environment variables or paid-service dependency. Current limitations are manual discovery, owner-entered engagement signals, heuristic recommendations, and no configured external provider. A future approved provider can write normalized records with `data_origin=provider` through a server-only adapter.
+YouTube opportunities add view velocity, engagement rate, recency, repeated-topic evidence, bakery fit, visual potential, inferred production ease, inventory readiness, and inferred margin signal. Logarithmic/capped velocity and recency weighting prevent old videos with very large lifetime view counts from automatically winning. “Consider,” “Test,” “Watch,” and “Not recommended” are decision-support labels, not verified demand. Complexity, margin, and product-fit fields are explicitly presented as inferences that should be validated with a small production test.
 
 ## Cost Conversions
 

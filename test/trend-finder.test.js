@@ -120,7 +120,7 @@ test("authenticated trend API covers listing, creation, duplicate rejection, ana
       ...process.env, NODE_ENV: "development", PORT: String(port), HOST: "127.0.0.1", DATA_DIR: dataDir,
       BAKERYOPS_USER: "owner", BAKERYOPS_PASSWORD: secret,
       SUPABASE_URL: "", SUPABASE_ANON_KEY: "", SUPABASE_SERVICE_ROLE_KEY: "",
-      SQUARE_ACCESS_TOKEN: "", OPENAI_API_KEY: "",
+      SQUARE_ACCESS_TOKEN: "", OPENAI_API_KEY: "", YOUTUBE_API_KEY: "",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -146,6 +146,12 @@ test("authenticated trend API covers listing, creation, duplicate rejection, ana
   const empty = await fetch(`${base}/api/trends`, { headers: auth });
   assert.equal(empty.status, 200);
   assert.deepEqual((await empty.json()).trends, []);
+  const youtube = await fetch(`${base}/api/trends/youtube`, { headers: auth });
+  assert.equal(youtube.status, 200);
+  const youtubeBody = await youtube.json();
+  assert.equal(youtubeBody.state, "not_configured");
+  assert.deepEqual(youtubeBody.trends, []);
+  assert.equal(Object.hasOwn(youtubeBody, "apiKey"), false);
 
   const invalid = await jsonFetch(`${base}/api/trends`, auth, "POST", { title: "Unsafe", sourceUrl: "file:///secret" });
   assert.equal(invalid.response.status, 400);

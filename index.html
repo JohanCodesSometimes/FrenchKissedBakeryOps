@@ -3,10 +3,10 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-    <meta name="theme-color" content="#0e7c66" />
+    <meta name="theme-color" content="#10233f" />
     <title>BakeryOps AI</title>
     <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%230e7c66'/%3E%3Ctext x='32' y='44' text-anchor='middle' font-size='38' font-family='Arial' font-weight='700' fill='white'%3EB%3C/text%3E%3C/svg%3E" />
-    <link rel="stylesheet" href="styles.css?v=20260720-trend-finder" />
+    <link rel="stylesheet" href="styles.css?v=20260724-french-owner" />
   </head>
   <body>
     <div class="app-shell">
@@ -52,61 +52,91 @@
         <div class="notice" id="app-notice" role="status" hidden></div>
 
         <section class="page-view active" id="dashboard-view">
-          <article class="panel system-status-panel" aria-labelledby="system-status-title">
-            <div class="panel-header"><div><p class="eyebrow">Owner checklist</p><h2 id="system-status-title">System status</h2></div><button class="ghost-button compact-button" id="system-status-retry" type="button">Retry checks</button></div>
-            <div class="system-status-summary pending" id="system-status-summary" aria-live="off">Checks have not completed.</div>
-            <div class="system-status-grid">
-              <div class="system-status-item" id="status-square"><span>Square</span><strong>Checking…</strong><small>Connection check in progress</small><button class="table-action" type="button" data-view-target="settings-view" hidden>Open Settings</button></div>
-              <div class="system-status-item" id="status-receipt-ai"><span>Receipt AI</span><strong>Checking…</strong><small>Availability check in progress</small><button class="table-action" type="button" data-view-target="receipts-view" hidden>Open Receipts</button></div>
-              <div class="system-status-item" id="status-database"><span>Database</span><strong>Checking…</strong><small>Connection check in progress</small><button class="table-action" type="button" id="database-status-retry" hidden>Retry</button></div>
-              <div class="system-status-item" id="status-last-square-sale"><span>Last Square sale</span><strong>Checking…</strong><small>Sales check in progress</small></div>
-              <div class="system-status-item" id="status-inventory"><span>Inventory</span><strong>Checking…</strong><small>Setup check in progress</small><button class="table-action" type="button" data-view-target="inventory-view" hidden>Set up Inventory</button></div>
+          <section class="owner-hero" aria-labelledby="today-glance-title">
+            <div class="owner-hero-heading">
+              <div><p class="eyebrow">La journée</p><h2 id="today-glance-title">Today at a glance</h2><p id="today-comparison">Live operating performance for today.</p></div>
+              <div class="live-sales-state"><span class="status-badge reconnecting" id="sales-connection-status" role="status">Reconnecting</span><button class="ghost-button compact-button" id="sales-retry" type="button">Retry</button><small id="sales-refreshed-at">Connecting to live sales</small></div>
             </div>
-          </article>
-          <article class="panel sales-summary-panel">
-            <div class="panel-header"><div><p class="eyebrow">Live sales</p><h2>Sales Summary</h2></div><div class="live-sales-state"><span class="status-badge reconnecting" id="sales-connection-status" role="status">Reconnecting</span><button class="ghost-button compact-button" id="sales-retry" type="button">Retry</button><small id="sales-refreshed-at">Connecting to live sales</small></div></div>
-            <div class="metrics-grid sales-summary-grid">
-              <div class="summary-metric"><span>Today's sales</span><strong id="summary-today">$0.00</strong></div>
-              <div class="summary-metric"><span>This week's sales</span><strong id="summary-week">$0.00</strong></div>
-              <div class="summary-metric"><span>This month's sales</span><strong id="summary-month">$0.00</strong></div>
-              <div class="summary-metric"><span>Average ticket</span><strong id="summary-average">$0.00</strong></div>
-              <div class="summary-metric"><span>Total transactions</span><strong id="summary-transactions">0</strong></div>
+            <div class="today-kpi-grid">
+              <article class="today-kpi featured"><span>Revenue today</span><strong id="revenue-today">$0.00</strong><small id="summary-today">$0.00 recorded</small></article>
+              <article class="today-kpi"><span>Orders today</span><strong id="today-order-count">0</strong><small>Revenue-bearing transactions</small></article>
+              <article class="today-kpi"><span>Average order</span><strong id="today-average-order">$0.00</strong><small id="summary-average">$0.00 all-period ticket</small></article>
+              <article class="today-kpi"><span>Best seller today</span><strong id="today-best-product">No sales yet</strong><small>By net revenue</small></article>
             </div>
-          </article>
-          <article class="panel section-gap">
-            <div class="panel-header"><div><p class="eyebrow">Live sales</p><h2>Sales History</h2></div></div>
-            <div class="table-wrap"><table><thead><tr><th>Date</th><th>Product</th><th>Quantity</th><th>Net revenue</th><th>Refunded</th><th>Status</th><th>Tax</th><th>Discount</th><th>Source</th></tr></thead><tbody id="dashboard-sales-history"><tr><td colspan="9"><div class="empty-state table-empty"><strong>No sales recorded yet</strong><p>Completed Square sales and manual entries will appear here.</p></div></td></tr></tbody></table></div>
-          </article>
-          <div class="metrics-grid dashboard-metrics">
-            <article class="metric-card"><span>Revenue Today</span><strong id="revenue-today">$0.00</strong><small>Recorded sales</small></article>
-            <article class="metric-card"><span>Revenue This Month</span><strong id="revenue-month">$0.00</strong><small>Recorded sales</small></article>
-            <article class="metric-card"><span>Expenses This Month</span><strong id="expenses-month">$0.00</strong><small>Recorded expenses</small></article>
-            <article class="metric-card highlight"><span>Estimated Profit</span><strong id="estimated-profit">$0.00</strong><small>Revenue minus expenses</small></article>
-            <article class="metric-card"><span>Low Inventory</span><strong id="low-stock-count">0</strong><small>Items at or below threshold</small></article>
-          </div>
+            <div class="quick-actions" aria-label="Quick actions">
+              <button class="primary-button" type="button" data-open-dialog="sale-dialog">Add sale</button>
+              <button class="secondary-button" type="button" data-view-target="receipts-view">Upload receipt</button>
+              <button class="secondary-button" type="button" data-view-target="inventory-view">Check inventory</button>
+              <button class="secondary-button" type="button" data-view-target="trends-view">Explore trends</button>
+            </div>
+          </section>
 
-          <div class="dashboard-grid">
-            <article class="panel wide">
-              <div class="panel-header"><div><p class="eyebrow">Revenue</p><h2>Last 7 days</h2></div><button class="secondary-button" type="button" data-open-dialog="sale-dialog">Add Sale</button></div>
+          <section class="owner-section" aria-labelledby="attention-title">
+            <div class="owner-section-heading"><div><p class="eyebrow">À surveiller</p><h2 id="attention-title">What needs attention</h2></div></div>
+            <div class="attention-grid" id="owner-attention">
+              <article class="attention-card"><strong>Checking operations…</strong><p>Current alerts will appear here.</p></article>
+            </div>
+            <details class="system-status-details">
+              <summary>Technical system details</summary>
+              <article class="panel system-status-panel" aria-labelledby="system-status-title">
+                <div class="panel-header"><div><p class="eyebrow">Connections</p><h2 id="system-status-title">System status</h2></div><button class="ghost-button compact-button" id="system-status-retry" type="button">Retry checks</button></div>
+                <div class="system-status-summary pending" id="system-status-summary" aria-live="off">Checks have not completed.</div>
+                <div class="system-status-grid">
+                  <div class="system-status-item" id="status-square"><span>Square</span><strong>Checking…</strong><small>Connection check in progress</small><button class="table-action" type="button" data-view-target="settings-view" hidden>Open Settings</button></div>
+                  <div class="system-status-item" id="status-receipt-ai"><span>Receipt AI</span><strong>Checking…</strong><small>Availability check in progress</small><button class="table-action" type="button" data-view-target="receipts-view" hidden>Open Receipts</button></div>
+                  <div class="system-status-item" id="status-database"><span>Database</span><strong>Checking…</strong><small>Connection check in progress</small><button class="table-action" type="button" id="database-status-retry" hidden>Retry</button></div>
+                  <div class="system-status-item" id="status-last-square-sale"><span>Last Square sale</span><strong>Checking…</strong><small>Sales check in progress</small></div>
+                  <div class="system-status-item" id="status-inventory"><span>Inventory</span><strong>Checking…</strong><small>Setup check in progress</small><button class="table-action" type="button" data-view-target="inventory-view" hidden>Set up Inventory</button></div>
+                </div>
+              </article>
+            </details>
+          </section>
+
+          <section class="owner-section" aria-labelledby="performance-title">
+            <div class="owner-section-heading"><div><p class="eyebrow">Performance</p><h2 id="performance-title">Sales & profit trends</h2></div></div>
+            <div class="metrics-grid sales-summary-grid owner-summary-strip">
+              <div class="summary-metric"><span>This week</span><strong id="summary-week">$0.00</strong></div>
+              <div class="summary-metric"><span>This month</span><strong id="summary-month">$0.00</strong></div>
+              <div class="summary-metric"><span>Monthly expenses</span><strong id="expenses-month">$0.00</strong></div>
+              <div class="summary-metric"><span>Estimated monthly profit</span><strong id="estimated-profit">$0.00</strong></div>
+              <div class="summary-metric"><span>All transactions</span><strong id="summary-transactions">0</strong></div>
+              <span id="revenue-month" hidden>$0.00</span><span id="low-stock-count" hidden>0</span>
+            </div>
+            <article class="panel">
+              <div class="panel-header"><div><p class="eyebrow">Net revenue</p><h3>Last 7 days</h3></div><button class="secondary-button" type="button" data-open-dialog="sale-dialog">Add Sale</button></div>
               <div class="chart empty-chart" id="sales-chart"><div class="empty-state"><strong>No sales recorded yet</strong><p>Add a sale to populate revenue analytics.</p></div></div>
             </article>
-            <article class="panel">
-              <div class="panel-header"><div><p class="eyebrow">Products</p><h2>Top selling products</h2></div></div>
-              <div id="top-products" class="record-list compact"><div class="empty-state"><strong>No sales recorded yet</strong><p>Product performance will appear here.</p></div></div>
-            </article>
-            <article class="panel">
-              <div class="panel-header"><div><p class="eyebrow">Inventory</p><h2>Low stock alerts</h2></div></div>
-              <div id="low-stock-list" class="record-list compact"><div class="empty-state"><strong>No inventory items added yet</strong><p>Add ingredients to enable alerts.</p></div></div>
-            </article>
-            <article class="panel">
-              <div class="panel-header"><div><p class="eyebrow">Expenses</p><h2>Recent expenses</h2></div></div>
-              <div id="dashboard-expenses" class="record-list compact"><div class="empty-state"><strong>No expenses recorded yet</strong></div></div>
-            </article>
-            <article class="panel">
-              <div class="panel-header"><div><p class="eyebrow">Sales</p><h2>Recent sales</h2></div></div>
-              <div id="dashboard-sales" class="record-list compact"><div class="empty-state"><strong>No sales recorded yet</strong></div></div>
-            </article>
-          </div>
+          </section>
+
+          <section class="owner-section" aria-labelledby="products-title">
+            <div class="owner-section-heading"><div><p class="eyebrow">Le menu</p><h2 id="products-title">Product performance</h2></div><button class="ghost-button compact-button" type="button" data-view-target="sales-view">View all sales</button></div>
+            <div class="owner-two-column">
+              <article class="panel"><div class="panel-header"><div><h3>Top products</h3><small>Quantity and net revenue</small></div></div><div id="top-products" class="record-list compact"><div class="empty-state"><strong>No sales recorded yet</strong><p>Product performance will appear here.</p></div></div></article>
+              <article class="panel"><div class="panel-header"><div><h3>Recent sales</h3><small>Latest recorded transactions</small></div></div><div id="dashboard-sales" class="record-list compact"><div class="empty-state"><strong>No sales recorded yet</strong></div></div></article>
+            </div>
+          </section>
+
+          <section class="owner-section" aria-labelledby="inventory-purchasing-title">
+            <div class="owner-section-heading"><div><p class="eyebrow">La réserve</p><h2 id="inventory-purchasing-title">Inventory & purchasing</h2></div><button class="ghost-button compact-button" type="button" data-view-target="shopping-view">Open purchasing</button></div>
+            <div class="owner-two-column">
+              <article class="panel"><div class="panel-header"><div><h3>Low stock</h3><small>At or below minimum threshold</small></div></div><div id="low-stock-list" class="record-list compact"><div class="empty-state"><strong>No inventory items added yet</strong><p>Add ingredients to enable alerts.</p></div></div></article>
+              <article class="panel"><div class="panel-header"><div><h3>Recent expenses</h3><small>Latest purchasing activity</small></div></div><div id="dashboard-expenses" class="record-list compact"><div class="empty-state"><strong>No expenses recorded yet</strong></div></div></article>
+            </div>
+          </section>
+
+          <section class="owner-section" aria-labelledby="recent-activity-title">
+            <div class="owner-section-heading"><div><p class="eyebrow">Journal</p><h2 id="recent-activity-title">Recent activity</h2></div><button class="ghost-button compact-button" type="button" data-view-target="activity-view">Open activity</button></div>
+            <article class="panel"><div id="dashboard-activity" class="activity-list"><div class="empty-state"><strong>No activity yet</strong><p>Recorded operational changes will appear here.</p></div></div></article>
+          </section>
+
+          <section class="owner-section" aria-labelledby="trend-opportunities-title">
+            <div class="owner-section-heading"><div><p class="eyebrow">À découvrir</p><h2 id="trend-opportunities-title">Trend opportunities</h2></div><button class="ghost-button compact-button" type="button" data-view-target="trends-view">Open Trend Finder</button></div>
+            <article class="panel"><div id="dashboard-trend-opportunities" class="record-list compact"><div class="empty-state"><strong>Loading opportunities…</strong><p>Checking your highest-scoring curated trends.</p></div></div></article>
+          </section>
+
+          <section class="owner-section" aria-labelledby="sales-history-title">
+            <article class="panel"><div class="panel-header"><div><p class="eyebrow">Ledger</p><h2 id="sales-history-title">Sales history</h2></div></div><div class="table-wrap"><table><thead><tr><th>Date</th><th>Product</th><th>Quantity</th><th>Net revenue</th><th>Refunded</th><th>Status</th><th>Tax</th><th>Discount</th><th>Source</th></tr></thead><tbody id="dashboard-sales-history"><tr><td colspan="9"><div class="empty-state table-empty"><strong>No sales recorded yet</strong><p>Completed Square sales and manual entries will appear here.</p></div></td></tr></tbody></table></div></article>
+          </section>
         </section>
 
         <section class="page-view" id="expenses-view" hidden>
@@ -214,9 +244,10 @@
 
         <section class="page-view" id="trends-view" hidden>
           <div class="section-toolbar trend-heading">
-            <div><p class="eyebrow">Food opportunity intelligence</p><h2>Find the next bakery-worthy idea</h2><p class="settings-copy">Trends are manually collected or added through configured providers; they are not live TikTok data.</p></div>
-            <button class="primary-button" id="open-trend-dialog" type="button">Add Trend</button>
+            <div><p class="eyebrow">L’inspiration</p><h2>Find the next bakery-worthy idea</h2><p class="settings-copy">Compare owner-curated observations with recent public YouTube signals. Manually entered TikTok references are not live TikTok data. Scores are explainable decision support, never proof of demand.</p></div>
+            <div class="panel-actions"><button class="secondary-button" id="refresh-youtube-trends" type="button">Refresh YouTube</button><button class="primary-button" id="open-trend-dialog" type="button">Add Trend</button></div>
           </div>
+          <aside class="provider-status" id="youtube-provider-status" role="status"><strong>YouTube discovery</strong><span>Checking server configuration…</span></aside>
           <section class="metrics-grid trend-summary-grid" aria-label="Trend summary">
             <article class="metric-card"><span>Active trends</span><strong id="trend-active-count">0</strong><small>Ready to evaluate</small></article>
             <article class="metric-card"><span>High opportunity</span><strong id="trend-high-count">0</strong><small>Score of 75 or higher</small></article>
@@ -228,6 +259,7 @@
               <label class="search-field"><span>Search</span><input name="search" type="search" maxlength="120" placeholder="Title, product, hashtag" /></label>
               <label class="search-field"><span>Category</span><select name="category"><option value="">All categories</option><option value="pastries">Pastries</option><option value="cakes">Cakes</option><option value="cookies">Cookies</option><option value="drinks">Drinks</option><option value="seasonal">Seasonal</option><option value="packaging">Packaging</option><option value="other">Other</option></select></label>
               <label class="search-field"><span>Status</span><select name="status"><option value="">All statuses</option><option value="active">Active</option><option value="watching">Watching</option><option value="testing">Testing</option><option value="adopted">Adopted</option><option value="archived">Archived</option></select></label>
+              <label class="search-field"><span>Source</span><select name="source"><option value="all">All sources</option><option value="curated">Curated</option><option value="youtube">YouTube</option></select></label>
               <label class="search-field"><span>Sort</span><select name="sort"><option value="opportunity">Opportunity</option><option value="recent">Most recent</option><option value="engagement">Engagement</option><option value="relevance">Relevance</option><option value="oldest">Oldest seen</option></select></label>
             </form>
           </article>
@@ -270,7 +302,7 @@
         </section>
 
         <section class="page-view" id="activity-view" hidden>
-          <article class="panel"><div class="panel-header"><div><p class="eyebrow">Audit trail</p><h2>Recent activity</h2></div></div><div id="activity-list" class="activity-list"><div class="empty-state"><strong>No activity yet</strong><p>Record changes will appear here.</p></div></div></article>
+          <article class="panel"><div class="panel-header"><div><p class="eyebrow">Audit trail</p><h2>Recent activity</h2></div><div class="activity-filters" aria-label="Filter activity"><button class="filter-chip active" type="button" data-activity-filter="all">All</button><button class="filter-chip" type="button" data-activity-filter="sales">Sales</button><button class="filter-chip" type="button" data-activity-filter="inventory">Inventory</button><button class="filter-chip" type="button" data-activity-filter="receipts">Receipts</button><button class="filter-chip" type="button" data-activity-filter="trends">Trends</button></div></div><div id="activity-list" class="activity-list"><div class="empty-state"><strong>No activity yet</strong><p>Record changes will appear here.</p></div></div></article>
         </section>
 
         <section class="page-view" id="settings-view" hidden>

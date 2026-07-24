@@ -12,6 +12,8 @@
   const testForm = document.querySelector("#trend-test-form");
   const trendsById = new Map();
   const dialogTriggers = new WeakMap();
+  let youtubeTrends = [];
+  let youtubeResult = null;
   let refreshSequence = 0;
   let submitting = false;
   let searchTimer = null;
@@ -45,6 +47,17 @@
 
   filters.addEventListener("submit", (event) => event.preventDefault());
   filters.addEventListener("change", refreshTrends);
+  document.querySelector("#refresh-youtube-trends")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    button.textContent = "Refreshing…";
+    try {
+      await refreshTrends({ youtubeRefresh: true });
+    } finally {
+      button.disabled = false;
+      button.textContent = "Refresh YouTube";
+    }
+  });
   filters.elements.search.addEventListener("input", () => {
     window.clearTimeout(searchTimer);
     searchTimer = window.setTimeout(refreshTrends, 250);
@@ -128,24 +141,79 @@
     }
   });
 
-  async function refreshTrends() {
+  async function refreshTrends(options = {}) {
     const sequence = ++refreshSequence;
-    showState("Loading trends…", "Checking your curated opportunity list.");
+    showState("Loading trends…", "Checking curated ideas and available provider signals.");
     const params = new URLSearchParams();
     for (const [key, value] of new FormData(filters).entries()) {
-      if (value) params.set(key, value);
+      if (value && key !== "source") params.set(key, value);
     }
     params.set("limit", "100");
     try {
-      const result = await request(`/api/trends?${params.toString()}`);
+      const [result, provider] = await Promise.all([
+        request(`/api/trends?${params.toString()}`),
+        request(`/api/trends/youtube${options.youtubeRefresh ? "?refresh=1" : ""}`),
+      ]);
       if (sequence !== refreshSequence) return;
-      renderSummary(result.summary || {});
-      renderTrends(result.trends || []);
+      youtubeResult = provider;
+      youtubeTrends = provider.trends || [];
+      renderProviderStatus(provider);
+      const combined = combineVisibleTrends(result.trends || [], youtubeTrends);
+      renderSummary(buildCombinedSummary(combined));
+      renderTrends(combined);
     } catch (error) {
       if (sequence !== refreshSequence) return;
       list.hidden = true;
       showState("Trend Finder could not load", error.message, true);
     }
+  }
+
+  function combineVisibleTrends(curated, youtube) {
+    const source = filters.elements.source?.value || "all";
+    const search = String(filters.elements.search?.value || "").trim().toLowerCase();
+    const category = filters.elements.category?.value || "";
+    const status = filters.elements.status?.value || "";
+    const visibleYouTube = youtube.filter((trend) => {
+      if (category && trend.category !== category) return false;
+      if (status && status !== "active") return false;
+      if (!search) return true;
+      return [trend.title, trend.suggestedProduct, trend.channel, trend.topic].join(" ").toLowerCase().includes(search);
+    });
+    const rows = source === "curated" ? curated : source === "youtube" ? visibleYouTube : [...curated, ...visibleYouTube];
+    const sort = filters.elements.sort?.value || "opportunity";
+    const sorters = {
+      opportunity: (a, b) => Number(b.opportunityScore || 0) - Number(a.opportunityScore || 0),
+      engagement: (a, b) => Number(b.engagementScore || 0) - Number(a.engagementScore || 0),
+      relevance: (a, b) => Number(b.relevanceScore || 0) - Number(a.relevanceScore || 0),
+      recent: (a, b) => Date.parse(b.publishedAt || b.lastSeenAt || 0) - Date.parse(a.publishedAt || a.lastSeenAt || 0),
+      oldest: (a, b) => Date.parse(a.publishedAt || a.lastSeenAt || 0) - Date.parse(b.publishedAt || b.lastSeenAt || 0),
+    };
+    return rows.sort(sorters[sort]);
+  }
+
+  function buildCombinedSummary(trends) {
+    const visible = trends.filter((trend) => trend.trendStatus !== "archived");
+    const weekAgo = Date.now() - 7 * 86_400_000;
+    return {
+      activeTrends: visible.length,
+      highOpportunityTrends: visible.filter((trend) => Number(trend.opportunityScore || 0) >= 75).length,
+      newThisWeek: visible.filter((trend) => Date.parse(trend.publishedAt || trend.firstSeenAt || 0) >= weekAgo).length,
+      averageOpportunityScore: visible.length
+        ? Math.round(visible.reduce((sum, trend) => sum + Number(trend.opportunityScore || 0), 0) / visible.length)
+        : 0,
+    };
+  }
+
+  function renderProviderStatus(provider) {
+    const box = document.querySelector("#youtube-provider-status");
+    if (!box) return;
+    box.className = `provider-status ${provider.available ? "available" : "unavailable"}`;
+    box.replaceChildren();
+    box.append(element("strong", "", "YouTube discovery"));
+    const copy = provider.available
+      ? `${provider.trends?.length || 0} normalized opportunities${provider.cached ? " from the protected cache" : ""}${provider.stale ? " (stale while the provider recovers)" : ""}. Retrieved ${formatDateTime(provider.retrievedAt)}.`
+      : provider.error?.message || "YouTube discovery is not configured. Curated trends remain available.";
+    box.append(element("span", "", copy));
   }
 
   function renderSummary(summary) {
@@ -157,7 +225,7 @@
 
   function renderTrends(trends) {
     trendsById.clear();
-    trends.forEach((trend) => trendsById.set(trend.id, trend));
+    trends.filter((trend) => trend.dataOrigin !== "youtube").forEach((trend) => trendsById.set(trend.id, trend));
     list.replaceChildren();
     if (!trends.length) {
       list.hidden = true;
@@ -170,21 +238,32 @@
   }
 
   function buildTrendCard(trend) {
-    const card = element("article", "trend-card");
+    const isYouTube = trend.dataOrigin === "youtube";
+    const card = element("article", `trend-card${isYouTube ? " youtube-trend-card" : ""}`);
     const header = element("div", "trend-card-header");
     const heading = element("div");
     heading.append(element("p", "eyebrow", titleCase(trend.category)), element("h3", "", trend.title));
     const badges = element("div", "trend-badges");
     badges.append(
-      badge(titleCase(trend.trendStatus), `trend-status-${trend.trendStatus}`),
-      badge(trend.dataOrigin === "demo" ? "Demo sample" : trend.dataOrigin === "provider" ? "Configured provider" : "Manually curated", "trend-origin"),
+      badge(isYouTube ? trend.recommendation : titleCase(trend.trendStatus), `trend-status-${isYouTube ? recommendationClass(trend.recommendation) : trend.trendStatus}`),
+      badge(isYouTube ? "YouTube signal" : trend.dataOrigin === "demo" ? "Demo sample" : trend.dataOrigin === "provider" ? "Configured provider" : "Manually curated", "trend-origin"),
     );
     header.append(heading, badges);
     card.append(header);
 
+    if (isYouTube && trend.thumbnailUrl) {
+      const image = element("img", "trend-thumbnail");
+      image.src = trend.thumbnailUrl;
+      image.alt = "";
+      image.loading = "lazy";
+      image.referrerPolicy = "no-referrer";
+      card.append(image);
+    }
     if (trend.description) card.append(element("p", "trend-description", trend.description));
     const source = element("div", "trend-source-row");
-    source.append(element("span", "", `Source: ${trend.sourcePlatform || "Manual curation"}`));
+    source.append(element("span", "", isYouTube
+      ? `YouTube · ${trend.channel} · ${formatDate(trend.publishedAt)}`
+      : `Source: ${trend.sourcePlatform || "Manual curation"}`));
     if (trend.sourceUrl) {
       const link = element("a", "trend-source-link", "Open source ↗");
       link.href = trend.sourceUrl;
@@ -208,6 +287,17 @@
     );
     card.append(scores);
 
+    if (isYouTube) {
+      const signals = element("dl", "youtube-signals");
+      signals.append(
+        signalItem("Views", compactNumber(trend.views)),
+        signalItem("Daily velocity", compactNumber(trend.viewVelocity)),
+        signalItem("Engagement", `${Number(trend.engagementRate || 0).toFixed(2)}%`),
+        signalItem("Repeated topic", `${Number(trend.repeatedTopicCount || 1)} video${Number(trend.repeatedTopicCount || 1) === 1 ? "" : "s"}`),
+      );
+      card.append(signals);
+    }
+
     const recommendation = element("div", "trend-recommendation");
     recommendation.append(element("strong", "", "Bakery recommendation"));
     recommendation.append(element("p", "", trend.suggestedProduct || "Analyze this trend to create a product idea."));
@@ -215,7 +305,7 @@
     if (trend.analysisReasoning) recommendation.append(element("small", "", trend.analysisReasoning));
     card.append(recommendation);
 
-    if (trend.testDate || trend.expectedIngredientCost !== null && trend.expectedIngredientCost !== undefined) {
+    if (!isYouTube && (trend.testDate || trend.expectedIngredientCost !== null && trend.expectedIngredientCost !== undefined)) {
       const details = element("div", "trend-test-details");
       details.append(element("strong", "", "Trend test"));
       if (trend.testDate) details.append(element("span", "", `Planned for ${formatDate(trend.testDate)}`));
@@ -229,17 +319,21 @@
       card.append(details);
     }
 
-    card.append(element("p", "trend-dates", `First seen ${formatDate(trend.firstSeenAt)} · Last seen ${formatDate(trend.lastSeenAt)}`));
-    const actions = element("div", "trend-actions");
-    actions.append(
-      actionButton("Analyze", "analyze", trend.id, "primary-button"),
-      actionButton("Watch", "watching", trend.id),
-      actionButton("Test", "testing", trend.id),
-      actionButton("Adopt", "adopted", trend.id),
-      actionButton("Edit recommendation", "edit", trend.id),
-      actionButton("Dismiss", "archived", trend.id, "ghost-button danger"),
-    );
-    card.append(actions);
+    card.append(element("p", "trend-dates", isYouTube
+      ? `${trend.inferenceDisclosure} Source data retrieved ${formatDateTime(trend.retrievedAt || youtubeResult?.retrievedAt)}.`
+      : `First seen ${formatDate(trend.firstSeenAt)} · Last seen ${formatDate(trend.lastSeenAt)}`));
+    if (!isYouTube) {
+      const actions = element("div", "trend-actions");
+      actions.append(
+        actionButton("Analyze", "analyze", trend.id, "primary-button"),
+        actionButton("Watch", "watching", trend.id),
+        actionButton("Test", "testing", trend.id),
+        actionButton("Adopt", "adopted", trend.id),
+        actionButton("Edit recommendation", "edit", trend.id),
+        actionButton("Dismiss", "archived", trend.id, "ghost-button danger"),
+      );
+      card.append(actions);
+    }
     return card;
   }
 
@@ -336,6 +430,11 @@
     item.append(element("dt", "", label), element("dd", "", `${Number(value || 0)}/100`));
     return item;
   }
+  function signalItem(label, value) {
+    const item = element("div");
+    item.append(element("dt", "", label), element("dd", "", value));
+    return item;
+  }
 
   function badge(text, className) { return element("span", `pill ${className}`, text); }
   function actionButton(label, action, id, className = "secondary-button") {
@@ -357,6 +456,12 @@
     const parsed = new Date(value);
     return Number.isNaN(parsed.getTime()) ? "not available" : parsed.toLocaleDateString(undefined, { month: "short", day: "numeric", year: "numeric" });
   }
+  function formatDateTime(value) {
+    const parsed = new Date(value);
+    return Number.isNaN(parsed.getTime()) ? "not yet" : parsed.toLocaleString(undefined, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  }
+  function compactNumber(value) { return new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 }).format(Number(value || 0)); }
+  function recommendationClass(value) { return String(value || "").toLowerCase().replace(/\s+/g, "-"); }
 
   function formatMoney(value) {
     return new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(Number(value || 0));

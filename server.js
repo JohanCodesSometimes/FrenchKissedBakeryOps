@@ -12,6 +12,7 @@ const { calculateRecipeProfitability } = require("./recipe-costing");
 const { buildPurchasingIntelligence } = require("./purchasing-intelligence");
 const { mergeSales } = require("./live-sales");
 const { createRecoveryManager } = require("./resilience");
+const { createYouTubeTrendService } = require("./youtube-trends");
 const {
   analyzeTrend,
   buildTrendSummary,
@@ -52,6 +53,7 @@ let customers;
 let receiptParser;
 let httpServer;
 let recoveryManager;
+let youtubeTrendService;
 let applicationReady = false;
 let shuttingDown = false;
 const receiptDrafts = new Map();
@@ -69,7 +71,9 @@ const types = {
 
 function bootstrap() {
   receiptParser = createReceiptParser({ env: process.env, logger: console });
+  youtubeTrendService = createYouTubeTrendService({ env: process.env });
   console.log(`[receipts] OpenAI Vision ${receiptParser.configured ? "configured" : "not configured"}.`);
+  console.log(`[youtube] Discovery ${youtubeTrendService.status().configured ? "configured" : "not configured"}.`);
   recoveryManager = createRecoveryManager({
     connect: initializeApplicationState,
     onReady: () => { applicationReady = true; },
@@ -305,6 +309,15 @@ function startServer() {
 
       if (url.pathname === "/api/trends" && req.method === "POST") {
         return await createFoodTrend(req, res);
+      }
+
+      if (url.pathname === "/api/trends/youtube" && req.method === "GET") {
+        const refresh = url.searchParams.get("refresh") === "1";
+        const result = await youtubeTrendService.discover({
+          refresh,
+          inventory: collections.inventory,
+        });
+        return sendJson(res, 200, result, noStoreHeaders());
       }
 
       const trendAnalyzeMatch = url.pathname.match(/^\/api\/trends\/([^/]+)\/analyze$/);
@@ -1140,6 +1153,7 @@ function buildDashboard() {
     inventory: { ...inventory, alerts: inventory.summary.lowStockCount },
     recipes: collections.recipes.map((recipe) => enrichRecipe(recipe)),
     productPerformance: buildProductPerformance(),
+    recentActivity: activity.slice(0, 6),
     ownerStatus: buildOwnerStatus(),
     updatedAt: new Date().toISOString(),
   };

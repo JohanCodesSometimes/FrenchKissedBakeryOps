@@ -16,6 +16,7 @@ let appData = null;
 let appSettings = null;
 let priceHistory = [];
 let activityLog = [];
+let activityFilter = "all";
 let receiptsData = [];
 let customersData = [];
 let customerInsights = null;
@@ -94,6 +95,7 @@ function initialize() {
   document.querySelector("#report-month").value = localDateKey(new Date()).slice(0, 7);
   initializeSystemStatusChecklist();
   void refreshDashboard();
+  void refreshDashboardTrends();
   void refreshSettings({ background: true });
   void salesPollController.start({ immediate: true });
   updateContactsPolling({ refresh: false });
@@ -197,6 +199,15 @@ function bindEvents() {
   document.addEventListener("click", async (event) => {
     const navButton = event.target.closest("[data-view-target]");
     if (navButton) return showView(navButton.dataset.viewTarget);
+
+    const activityFilterButton = event.target.closest("[data-activity-filter]");
+    if (activityFilterButton) {
+      activityFilter = activityFilterButton.dataset.activityFilter;
+      document.querySelectorAll("[data-activity-filter]").forEach((button) => {
+        button.classList.toggle("active", button === activityFilterButton);
+      });
+      return renderActivityLog();
+    }
 
     const openButton = event.target.closest("[data-open-dialog]");
     if (openButton) return openEntryDialog(openButton.dataset.openDialog, null, openButton);
@@ -882,6 +893,8 @@ function renderDashboard() {
   renderSalesDependentViews();
   setText("#expenses-month", money.format(appData.financials.expensesThisMonth));
   setText("#low-stock-count", appData.inventory.alerts);
+  renderOwnerAttention();
+  renderDashboardActivity(appData.recentActivity || []);
   renderCompactList(
     "#low-stock-list",
     appData.inventory.lowStock.slice(0, 5).map((item) => ({
@@ -915,6 +928,7 @@ function renderSalesDependentViews() {
   setText("#revenue-today", money.format(financials.revenueToday));
   setText("#revenue-month", money.format(financials.revenueThisMonth));
   setText("#estimated-profit", money.format(financials.estimatedProfit));
+  renderTodayAtGlance();
   renderSalesChart(appData.sales);
   renderCompactList(
     "#top-products",
@@ -935,6 +949,86 @@ function renderSalesDependentViews() {
     "No sales recorded yet",
   );
   renderSales();
+}
+
+function renderTodayAtGlance() {
+  const todayKey = localDateKey(new Date());
+  const yesterday = new Date();
+  yesterday.setDate(yesterday.getDate() - 1);
+  const yesterdayKey = localDateKey(yesterday);
+  const revenueSales = appData.sales.filter((sale) =>
+    ["completed", "partially_refunded"].includes(String(sale.status || "completed").toLowerCase()));
+  const todaySales = revenueSales.filter((sale) => sale.date === todayKey);
+  const yesterdayRevenue = revenueSales
+    .filter((sale) => sale.date === yesterdayKey)
+    .reduce((total, sale) => total + Number(sale.saleAmount || 0), 0);
+  const todayRevenue = Number(appData.financials.revenueToday || 0);
+  setText("#today-order-count", numberFormat.format(todaySales.length));
+  setText("#today-average-order", money.format(todaySales.length ? todayRevenue / todaySales.length : 0));
+  const best = [...todaySales].sort((left, right) => Number(right.saleAmount || 0) - Number(left.saleAmount || 0))[0];
+  setText("#today-best-product", best?.product || "No sales yet");
+  const comparison = yesterdayRevenue > 0
+    ? `${todayRevenue >= yesterdayRevenue ? "Up" : "Down"} ${numberFormat.format(Math.abs((todayRevenue - yesterdayRevenue) / yesterdayRevenue) * 100)}% from yesterday.`
+    : "No reliable yesterday comparison is available.";
+  setText("#today-comparison", comparison);
+}
+
+function renderOwnerAttention() {
+  const container = document.querySelector("#owner-attention");
+  if (!container) return;
+  const alerts = [];
+  const lowStock = appData.inventory?.lowStock || [];
+  if (lowStock.length) {
+    alerts.push({
+      tone: "warning",
+      label: `${lowStock.length} low-stock ${lowStock.length === 1 ? "item" : "items"}`,
+      copy: lowStock.slice(0, 3).map((item) => item.ingredientName).join(", "),
+      action: "inventory-view",
+      button: "Review inventory",
+    });
+  }
+  if (squareStatusData && !squareStatusData.connected) {
+    alerts.push({ tone: "warning", label: "Square is not connected", copy: "Manual sales remain available.", action: "settings-view", button: "Open settings" });
+  }
+  if (appData.ownerStatus && !appData.ownerStatus.receiptAiAvailable) {
+    alerts.push({ tone: "neutral", label: "Receipt AI is not configured", copy: "Manual expense and inventory entry still work.", action: "receipts-view", button: "Open receipts" });
+  }
+  if (!alerts.length) {
+    alerts.push({ tone: "good", label: "No urgent owner actions", copy: "Inventory and configured connections have no current warnings.", action: "dashboard-view", button: "" });
+  }
+  container.innerHTML = alerts.map((alert) => `<article class="attention-card ${alert.tone}">
+    <span class="attention-marker" aria-hidden="true"></span><div><strong>${escapeHtml(alert.label)}</strong><p>${escapeHtml(alert.copy)}</p>
+    ${alert.button ? `<button class="table-action" type="button" data-view-target="${alert.action}">${escapeHtml(alert.button)}</button>` : ""}</div>
+  </article>`).join("");
+}
+
+function renderDashboardActivity(items) {
+  const container = document.querySelector("#dashboard-activity");
+  if (!container) return;
+  container.innerHTML = items.length
+    ? items.map(activityRowMarkup).join("")
+    : '<div class="empty-state"><strong>No activity yet</strong><p>Recorded operational changes will appear here.</p></div>';
+}
+
+async function refreshDashboardTrends() {
+  const container = document.querySelector("#dashboard-trend-opportunities");
+  if (!container) return;
+  try {
+    const response = await fetch("/api/trends?sort=opportunity&limit=3", { cache: "no-store" });
+    if (!response.ok) throw new Error("Could not load trend opportunities");
+    const result = await response.json();
+    renderCompactList(
+      "#dashboard-trend-opportunities",
+      (result.trends || []).map((trend) => ({
+        title: trend.suggestedProduct || trend.title,
+        detail: `${titleCase(trend.category)} · ${trend.trendStatus}`,
+        value: `${Number(trend.opportunityScore || 0)}/100`,
+      })),
+      "No curated trend opportunities yet",
+    );
+  } catch {
+    container.innerHTML = '<div class="empty-state"><strong>Trend opportunities unavailable</strong><p>Open Trend Finder to try again. Dashboard sales remain unaffected.</p></div>';
+  }
 }
 
 function renderExpenses() {
@@ -1423,20 +1517,34 @@ async function refreshActivity({ background = false } = {}) {
     const response = await fetch("/api/activity");
     if (!response.ok) throw new Error("Could not load activity");
     activityLog = await response.json();
-    const container = document.querySelector("#activity-list");
-    container.innerHTML = activityLog.length
-      ? activityLog
-          .map(
-            (item) => `<article class="activity-row"><span class="activity-dot"></span><div><strong>${escapeHtml(item.description)}</strong><span>${formatDateTime(item.timestamp)}</span></div></article>`,
-          )
-          .join("")
-      : '<div class="empty-state"><strong>No activity yet</strong><p>Record changes will appear here.</p></div>';
+    renderActivityLog();
     clearSectionError("activity-view");
     return true;
   } catch (error) {
     showSectionError("activity-view", "Activity could not load.", error.message, background);
     return false;
   }
+}
+
+function renderActivityLog() {
+  const container = document.querySelector("#activity-list");
+  if (!container) return;
+  const prefixes = {
+    sales: ["sales."],
+    inventory: ["inventory."],
+    receipts: ["receipt."],
+    trends: ["food_trends."],
+  };
+  const visible = activityFilter === "all"
+    ? activityLog
+    : activityLog.filter((item) => prefixes[activityFilter]?.some((prefix) => String(item.action || "").startsWith(prefix)));
+  container.innerHTML = visible.length
+    ? visible.map(activityRowMarkup).join("")
+    : '<div class="empty-state"><strong>No matching activity</strong><p>Try another filter.</p></div>';
+}
+
+function activityRowMarkup(item) {
+  return `<article class="activity-row"><span class="activity-dot"></span><div><strong>${escapeHtml(item.description)}</strong><span>${formatDateTime(item.timestamp)}</span></div></article>`;
 }
 
 async function refreshReport({ background = false } = {}) {
