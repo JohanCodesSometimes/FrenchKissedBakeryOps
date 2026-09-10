@@ -1108,6 +1108,25 @@ dialog.receipt-dialog {
 .receipt-review-warnings p { margin: 4px 0; color: var(--muted); }
 .receipt-review-warnings ul { margin: 8px 0 0; padding-left: 20px; }
 .receipt-line-flags { display: block; margin-top: 4px; color: var(--warn); font-size: 0.76rem; font-weight: 750; }
+.receipt-duplicate-confirm {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid var(--warn);
+  border-radius: 8px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--warn) 10%, var(--surface));
+  font-weight: 700;
+}
+.receipt-duplicate-confirm[hidden] { display: none; }
+.receipt-duplicate-confirm input { width: auto; margin-top: 3px; }
+.receipt-package-fields { min-width: 230px; }
+.receipt-package-fields input,
+.receipt-package-fields select { display: inline-block; width: 31%; min-width: 68px; }
+.receipt-application-result ul { margin: 8px 0 16px; padding-left: 20px; }
+.receipt-application-result p { color: var(--muted); }
 .receipt-drop-zone {
   display: grid;
   justify-items: center;

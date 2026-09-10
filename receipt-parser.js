@@ -23,12 +23,16 @@ const receiptSchema = {
       items: {
         type: "object",
         additionalProperties: false,
-        required: ["itemName", "rawLine", "quantity", "unit", "unitPrice", "totalPrice", "category", "updateInventory", "isDiscount", "isFee", "isDeposit"],
+        required: ["itemName", "rawLine", "receivedQuantity", "receivedUnit", "packageCount", "packageSizeQuantity", "packageSizeUnit", "quantityUncertain", "unitPrice", "totalPrice", "category", "updateInventory", "isDiscount", "isFee", "isDeposit"],
         properties: {
           itemName: { type: "string" },
           rawLine: { type: "string" },
-          quantity: { type: "number" },
-          unit: { type: "string", enum: ALLOWED_UNITS },
+          receivedQuantity: { type: "number", description: "Total stock received. Use 0 when it cannot be determined from visible text." },
+          receivedUnit: { type: "string", enum: ALLOWED_UNITS },
+          packageCount: { type: "number", description: "Number of packages purchased, or 0 when not shown." },
+          packageSizeQuantity: { type: "number", description: "Quantity in each package, or 0 when not shown." },
+          packageSizeUnit: { type: "string", enum: ALLOWED_UNITS },
+          quantityUncertain: { type: "boolean" },
           unitPrice: { type: "number" },
           totalPrice: { type: "number" },
           category: { type: "string", enum: ALLOWED_CATEGORIES },
@@ -157,14 +161,19 @@ function normalizeReceipt(receipt) {
       continue;
     }
 
-    let quantity = Number(source.quantity);
-    if (!Number.isFinite(quantity) || quantity <= 0) {
-      quantity = 1;
-      warnings.push(`${itemName}: quantity was unclear and was set to 1.`);
+    let receivedQuantity = Number(source.receivedQuantity ?? source.quantity);
+    const quantityUncertain = Boolean(source.quantityUncertain) || !Number.isFinite(receivedQuantity) || receivedQuantity <= 0;
+    if (!Number.isFinite(receivedQuantity) || receivedQuantity <= 0) {
+      receivedQuantity = 0;
+      warnings.push(`${itemName}: received quantity was unclear; correct it before updating inventory.`);
     }
 
-    const unit = ALLOWED_UNITS.includes(source.unit) ? source.unit : "unknown";
-    if (unit === "unknown") warnings.push(`${itemName}: unit was not shown.`);
+    const receivedUnit = ALLOWED_UNITS.includes(source.receivedUnit) ? source.receivedUnit
+      : ALLOWED_UNITS.includes(source.unit) ? source.unit : "unknown";
+    if (receivedUnit === "unknown") warnings.push(`${itemName}: received unit was not shown.`);
+    const packageCount = optionalPositiveNumber(source.packageCount);
+    const packageSizeQuantity = optionalPositiveNumber(source.packageSizeQuantity);
+    const packageSizeUnit = ALLOWED_UNITS.includes(source.packageSizeUnit) ? source.packageSizeUnit : "unknown";
 
     let totalPrice = Number(source.totalPrice);
     if (!Number.isFinite(totalPrice)) {
@@ -174,7 +183,8 @@ function normalizeReceipt(receipt) {
 
     let unitPrice = Number(source.unitPrice);
     if (!Number.isFinite(unitPrice) || unitPrice < 0 || (unitPrice === 0 && totalPrice !== 0)) {
-      unitPrice = quantity > 0 ? Math.abs(totalPrice) / quantity : 0;
+      unitPrice = packageCount ? Math.abs(totalPrice) / packageCount
+        : receivedQuantity > 0 ? Math.abs(totalPrice) / receivedQuantity : 0;
       warnings.push(`${itemName}: unit price was estimated from the line total.`);
     }
 
@@ -185,12 +195,19 @@ function normalizeReceipt(receipt) {
     items.push({
       itemName,
       rawLine,
-      quantity: round(quantity),
-      unit,
+      quantity: roundQuantity(receivedQuantity),
+      unit: receivedUnit,
+      receivedQuantity: roundQuantity(receivedQuantity),
+      receivedUnit,
+      packageCount,
+      packageSizeQuantity,
+      packageSizeUnit,
+      quantityUncertain,
       unitPrice: round(unitPrice),
       totalPrice: round(totalPrice),
       category,
-      updateInventory: Boolean(source.updateInventory) && unit !== "unknown" && !isDiscount && !isFee && !isDeposit,
+      updateInventoryRequested: Boolean(source.updateInventory),
+      updateInventory: Boolean(source.updateInventory) && !quantityUncertain && receivedUnit !== "unknown" && !isDiscount && !isFee && !isDeposit,
       isDiscount,
       isFee,
       isDeposit,
@@ -225,8 +242,17 @@ function stringList(value) {
   return Array.isArray(value) ? value.map((item) => String(item || "").trim()).filter(Boolean).slice(0, 500) : [];
 }
 
+function optionalPositiveNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number > 0 ? roundQuantity(number) : null;
+}
+
 function round(value) {
   return Math.round(Number(value) * 100) / 100;
+}
+
+function roundQuantity(value) {
+  return Math.round(Number(value) * 10000) / 10000;
 }
 
 function debugReceipt(logger, enabled, payload, warnings = [], reason = "") {
@@ -249,7 +275,7 @@ function receiptPrompt() {
 First transcribe every visible receipt line in reading order into rawTextLines. Then extract every visible purchasable line item, including convenience store items, groceries, drinks, snacks, bakery supplies, packaging, and ingredients. Do not reject or discard an item because it is not bakery-specific.
 Only use parseStatus=too_blurry when the receipt text cannot be read. Only use no_items when there are truly no visible line items. A partially readable receipt with one or more readable purchases is readable.
 Use YYYY-MM-DD for receiptDate, or an empty string when the date is unreadable. Store name may also be empty. Use 0 for unreadable subtotal, tax, or total and explain missing or uncertain fields in warnings.
-Preserve the visible source text for each item in rawLine. Use unknown or count when no unit is shown. When unitPrice is unclear, estimate it from totalPrice divided by a visible quantity. Never discard readable items simply because they are not inventory ingredients.
+Preserve the visible source text for each item in rawLine. Keep stock received separate from pricing and packaging: packageCount is the number of packages, packageSizeQuantity/packageSizeUnit describe one package, and receivedQuantity/receivedUnit are the total usable stock received. For example, two 5 lb bags are packageCount 2, packageSizeQuantity 5, packageSizeUnit lb, receivedQuantity 10, receivedUnit lb. Use 0 and quantityUncertain=true when the received amount is not supported by visible text. Use unknown when the stock unit is not visible. unitPrice is the visible or calculated price per purchased package; totalPrice is the line total. Never treat a price, line total, or package count as received stock quantity. Never discard readable items simply because they are not inventory ingredients.
 Deposits, recycling fees, taxes, discounts, and coupons must not cause parsing failure. Put non-item summary lines in ignoredLines. If represented as items, mark isFee, isDeposit, or isDiscount accurately; discount totalPrice may be negative. Set updateInventory false for discounts, fees, deposits, and non-stock purchases.
 Classify ordinary purchases as Ingredients, Packaging, Equipment, Utilities, or Other. Return a confidence from 0 to 1 and concise warnings for uncertain fields.`;
 }

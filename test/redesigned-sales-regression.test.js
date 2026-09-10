@@ -66,7 +66,7 @@ test("redesigned sales runtime commits before rendering and isolates every widge
 
 test("sales assets have a release-specific cache key and load before the application", () => {
   const liveAsset = 'live-sales.js?v=2026-07-24-sales-sync-regression';
-  const appAsset = 'script.js?v=2026-07-24-sales-sync-regression';
+  const appAsset = 'script.js?v=2026-09-10-receipt-inventory';
   assert.equal(html.split(liveAsset).length - 1, 1);
   assert.equal(html.split(appAsset).length - 1, 1);
   assert.ok(html.indexOf(liveAsset) < html.indexOf(appAsset));

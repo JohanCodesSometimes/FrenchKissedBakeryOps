@@ -61,7 +61,7 @@ Run `supabase/schema.sql` in the Supabase SQL Editor before adding these variabl
 
 If Supabase is unavailable, `/api/health` remains available while database-dependent routes return a structured `503 DATABASE_UNAVAILABLE` response with `Retry-After`. BakeryOps retries with bounded exponential backoff and reloads application state after recovery.
 
-Re-run the schema after updating BakeryOps to create the private `square_connections`, `receipts`, and `receipt_items` tables. Row-level security is enabled and no public policy is created for them.
+Re-run the schema after updating BakeryOps to create the private `square_connections`, `receipts`, and `receipt_items` tables. Row-level security is enabled and no public policy is created for them. Existing Supabase projects must also run `supabase/migrations/20260910_receipt_inventory.sql` before deploying the receipt-inventory release.
 
 ## Square Setup
 
@@ -91,7 +91,13 @@ Receipt images are parsed on the Node backend with OpenAI Vision. Add this serve
 OPENAI_API_KEY=<OpenAI API key>
 ```
 
-The browser accepts JPG, JPEG, and PNG files up to 15 MB. Images are held in memory for parsing and the API key is never sent to the frontend. The owner reviews and edits every extracted line before approval creates an expense, receipt items, inventory changes, supplier price history, and an activity entry.
+The browser accepts JPG, JPEG, and PNG files up to 15 MB. Images are held in memory for parsing and the API key is never sent to the frontend. The owner reviews and edits every extracted line before approval creates an expense, receipt items, inventory changes, supplier price history, and an activity entry. Each stock line must target an existing inventory item. BakeryOps adds the received quantity to current stock, converts compatible mass or count units, and leaves ambiguous lines unresolved for correction. Applying a receipt is idempotent and transactional in Supabase; retrying an already applied receipt does not add stock twice.
+
+### Receipt inventory migration
+
+For an existing Supabase database, open the Supabase SQL Editor and run the complete contents of `supabase/migrations/20260910_receipt_inventory.sql`. It is safe to re-run. Confirm that `public.receipt_inventory_adjustments` and `public.apply_receipt_inventory(jsonb)` exist, then deploy the matching application commit through the repository's normal GitHub-to-Railway deployment. Apply the migration first; receipt application requires the new database function.
+
+The migration preserves existing inventory, expenses, receipts, receipt items, sales, Square connections, and authentication data. It adds receipt hashes for duplicate review, persists resumable review payloads, and records the before/after quantity for every applied stock line.
 
 Receipt AI does not use Python, MarkItDown, a virtual environment, or custom Nixpacks configuration. Manual Expense and Inventory entry remains available when receipt parsing is not configured or fails.
 
@@ -115,6 +121,7 @@ DATA_DIR/food-trends.json
 DATA_DIR/square-connection.json
 DATA_DIR/receipt-items.json
 DATA_DIR/receipts.json
+DATA_DIR/receipt-application-journal.json
 ```
 
 Writes use a temporary file and rename step. Existing records from the previous prototype schema are migrated in memory when loaded.

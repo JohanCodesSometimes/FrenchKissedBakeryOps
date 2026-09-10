@@ -230,11 +230,20 @@ function bindEvents() {
     const duplicateButton = event.target.closest("[data-duplicate-recipe]");
     if (duplicateButton) return duplicateRecipe(duplicateButton.dataset.duplicateRecipe);
 
+    const receiptButton = event.target.closest("[data-review-receipt]");
+    if (receiptButton) return resumeReceiptReview(receiptButton.dataset.reviewReceipt);
+
     const removeIngredient = event.target.closest("[data-remove-ingredient]");
     if (removeIngredient) {
       removeIngredient.closest(".ingredient-row").remove();
       ensureIngredientRow();
     }
+  });
+  document.addEventListener("change", (event) => {
+    if (!event.target.matches('#receipt-review-items [name="inventoryItemId"]')) return;
+    const row = event.target.closest(".receipt-item-row");
+    row.querySelector('[name="updateInventory"]').checked = Boolean(event.target.value);
+    row.querySelector(".receipt-line-flags")?.remove();
   });
 
   document.querySelectorAll("dialog").forEach((dialog) => {
@@ -313,7 +322,7 @@ function uploadReceipt(file, onProgress) {
       try { result = JSON.parse(request.responseText || "{}"); }
       catch { return reject(new Error("AI parsing failed")); }
       if (request.status < 200 || request.status >= 300) {
-        return reject(new Error(result.error || "AI parsing failed"));
+        return reject(new Error(apiErrorMessage(result, "AI parsing failed")));
       }
       resolve(result);
     });
@@ -346,7 +355,8 @@ function bindReceiptDropZone() {
 
 function renderReceiptReview(receipt) {
   const form = document.querySelector("#receipt-review-form");
-  form.elements.draftId.value = receipt.draftId;
+  form.elements.draftId.value = receipt.draftId || "";
+  form.elements.receiptId.value = receipt.receiptId;
   form.elements.storeName.value = receipt.storeName || "";
   form.elements.receiptDate.value = receipt.receiptDate || "";
   form.elements.subtotal.value = Number(receipt.subtotal || 0).toFixed(2);
@@ -360,8 +370,16 @@ function renderReceiptReview(receipt) {
     ? `<strong>Check these extracted details</strong><p>Confidence: ${Math.round(Number(receipt.confidence || 0) * 100)}%</p><ul>${warnings.map((warning) => `<li>${escapeHtml(warning)}</li>`).join("")}</ul>`
     : "";
 
+  const duplicateConfirm = document.querySelector("#receipt-duplicate-confirm");
+  duplicateConfirm.hidden = !receipt.duplicateOfReceiptId;
+  form.elements.confirmDuplicate.checked = false;
+
+  const inventoryItems = Array.isArray(receipt.inventoryItems) ? receipt.inventoryItems : [];
   document.querySelector("#receipt-review-items").innerHTML = receipt.items.map((item) => {
     const flags = [item.isDiscount && "Discount", item.isFee && "Fee", item.isDeposit && "Deposit"].filter(Boolean);
+    const inventoryOptions = [`<option value="">Do not apply</option>`, ...inventoryItems.map((candidate) =>
+      `<option value="${escapeHtml(candidate.id)}" ${candidate.id === item.inventoryItemId ? "selected" : ""}>${escapeHtml(candidate.ingredientName)} (${numberFormat.format(candidate.quantity)} ${escapeHtml(candidate.unit)})</option>`,
+    )].join("");
     return `
     <tr class="receipt-item-row">
       <td>
@@ -372,12 +390,14 @@ function renderReceiptReview(receipt) {
         <input name="isDeposit" type="hidden" value="${Boolean(item.isDeposit)}" />
         ${flags.length ? `<span class="receipt-line-flags">${flags.join(" / ")}</span>` : ""}
       </td>
-      <td><input name="quantity" type="number" min="0.01" step="0.01" value="${Number(item.quantity)}" required /></td>
-      <td><select name="unit">${selectOptions(receiptUnitOptions, item.unit)}</select></td>
+      <td><input name="receivedQuantity" type="number" min="0.0001" step="0.0001" value="${Number(item.receivedQuantity ?? item.quantity) > 0 ? Number(item.receivedQuantity ?? item.quantity) : ""}" required /></td>
+      <td><select name="receivedUnit">${selectOptions(receiptUnitOptions, item.receivedUnit ?? item.unit)}</select></td>
+      <td class="receipt-package-fields"><input name="packageCount" type="number" min="0.0001" step="0.0001" value="${item.packageCount || ""}" placeholder="Packages" aria-label="Package count for ${escapeHtml(item.itemName)}" /><input name="packageSizeQuantity" type="number" min="0.0001" step="0.0001" value="${item.packageSizeQuantity || ""}" placeholder="Size each" aria-label="Package size for ${escapeHtml(item.itemName)}" /><select name="packageSizeUnit" aria-label="Package unit for ${escapeHtml(item.itemName)}">${selectOptions(receiptUnitOptions, item.packageSizeUnit || "unknown")}</select></td>
       <td><input name="unitPrice" type="number" min="0" step="0.01" value="${Number(item.unitPrice).toFixed(2)}" required /></td>
       <td><input name="totalPrice" type="number" step="0.01" value="${Number(item.totalPrice).toFixed(2)}" required /></td>
       <td><select name="category">${selectOptions(["Ingredients", "Packaging", "Equipment", "Utilities", "Other"], item.category)}</select></td>
-      <td><input name="updateInventory" type="checkbox" ${item.updateInventory ? "checked" : ""} aria-label="Update inventory for ${escapeHtml(item.itemName)}" /></td>
+      <td><select name="inventoryItemId" aria-label="Inventory match for ${escapeHtml(item.itemName)}">${inventoryOptions}</select>${item.unresolvedReason ? `<span class="receipt-line-flags">${escapeHtml(item.unresolvedReason)}</span>` : ""}</td>
+      <td><input name="updateInventory" type="checkbox" ${item.updateInventory ? "checked" : ""} aria-label="Apply inventory for ${escapeHtml(item.itemName)}" /></td>
     </tr>`;
   }).join("");
 }
@@ -392,11 +412,15 @@ async function approveReceipt(event) {
     const items = [...document.querySelectorAll("#receipt-review-items .receipt-item-row")].map((row) => ({
       itemName: row.querySelector('[name="itemName"]').value,
       rawLine: row.querySelector('[name="rawLine"]').value,
-      quantity: row.querySelector('[name="quantity"]').value,
-      unit: row.querySelector('[name="unit"]').value,
+      receivedQuantity: row.querySelector('[name="receivedQuantity"]').value,
+      receivedUnit: row.querySelector('[name="receivedUnit"]').value,
+      packageCount: row.querySelector('[name="packageCount"]').value,
+      packageSizeQuantity: row.querySelector('[name="packageSizeQuantity"]').value,
+      packageSizeUnit: row.querySelector('[name="packageSizeUnit"]').value,
       unitPrice: row.querySelector('[name="unitPrice"]').value,
       totalPrice: row.querySelector('[name="totalPrice"]').value,
       category: row.querySelector('[name="category"]').value,
+      inventoryItemId: row.querySelector('[name="inventoryItemId"]').value,
       updateInventory: row.querySelector('[name="updateInventory"]').checked,
       isDiscount: row.querySelector('[name="isDiscount"]').value === "true",
       isFee: row.querySelector('[name="isFee"]').value === "true",
@@ -408,14 +432,34 @@ async function approveReceipt(event) {
       body: JSON.stringify({ ...summary, items }),
     });
     const result = await response.json();
-    if (!response.ok) throw new Error(result.error || "Could not save receipt");
+    if (!response.ok) throw new Error(apiErrorMessage(result, "Could not apply receipt; your review was preserved for retry."));
+    appData = globalThis.BakeryReceiptUi.applySavedInventory(appData, result);
+    renderInventory();
     cancelReceiptReview();
-    showNotice("Receipt approved and inventory updated", "success");
-    await refreshAllData();
+    renderReceiptApplicationResult(result);
+    if (result.alreadyApplied) {
+      showNotice("This receipt was already applied; stock was not added again.", "info");
+    } else {
+      showNotice("Receipt saved and inventory updated.", "success");
+    }
+    void Promise.allSettled([refreshDashboard(), refreshReceipts(), refreshPriceHistory({ background: true })]);
   } catch (error) {
     showNotice(error.message, "error");
   } finally {
     submit.disabled = false;
+  }
+}
+
+async function resumeReceiptReview(receiptId) {
+  try {
+    const response = await fetch(`/api/receipts/${encodeURIComponent(receiptId)}/review`, { cache: "no-store" });
+    const result = await response.json();
+    if (!response.ok) throw new Error(apiErrorMessage(result, "Could not reopen receipt review"));
+    renderReceiptReview(result);
+    document.querySelector("#receipt-review-panel").hidden = false;
+    document.querySelector("#receipt-review-panel").scrollIntoView({ behavior: "smooth", block: "start" });
+  } catch (error) {
+    showNotice(error.message, "error");
   }
 }
 
@@ -425,6 +469,26 @@ function cancelReceiptReview() {
   document.querySelector("#receipt-review-items").innerHTML = "";
   document.querySelector("#receipt-review-warnings").hidden = true;
   document.querySelector("#receipt-review-warnings").innerHTML = "";
+  document.querySelector("#receipt-duplicate-confirm").hidden = true;
+}
+
+function renderReceiptApplicationResult(result) {
+  const panel = document.querySelector("#receipt-application-result");
+  const outcome = globalThis.BakeryReceiptUi.outcome(result);
+  const added = outcome.addedItems.length
+    ? `<ul>${outcome.addedItems.map((item) => `<li><strong>${escapeHtml(item.ingredientName)}</strong>: +${numberFormat.format(item.addedQuantity)} ${escapeHtml(item.stockUnit)}</li>`).join("")}</ul>`
+    : "<p>No stock lines were applied.</p>";
+  const unresolved = outcome.unresolvedLines.length
+    ? `<h3>Unresolved lines</h3><ul>${outcome.unresolvedLines.map((item) => `<li><strong>${escapeHtml(item.itemName)}</strong>: ${escapeHtml(item.reason)}</li>`).join("")}</ul>`
+    : "<p>All selected stock lines were resolved.</p>";
+  panel.innerHTML = `<div class="panel-header"><div><p class="eyebrow">Receipt result</p><h2>${outcome.alreadyApplied ? "Already applied" : "Inventory updated"}</h2></div></div><h3>Stock added</h3>${added}${unresolved}`;
+  panel.hidden = false;
+}
+
+function apiErrorMessage(result, fallback) {
+  if (typeof result?.error === "string") return result.error;
+  if (typeof result?.error?.message === "string") return result.error.message;
+  return fallback;
 }
 
 function selectOptions(options, selected) {
@@ -545,9 +609,10 @@ async function refreshReceipts() {
           <td>${receipt.receiptDate ? formatDate(receipt.receiptDate) : "-"}</td>
           <td>${money.format(receipt.total || 0)}</td>
           <td>${numberFormat.format(receipt.itemCount || 0)}</td>
-          <td><span class="receipt-status ${escapeHtml(receipt.status)}">${escapeHtml(receipt.status === "failed" ? receipt.errorCode || "Failed" : titleCase(receipt.status))}</span></td>
+          <td><span class="receipt-status ${escapeHtml(receipt.status)}">${escapeHtml(receipt.status === "failed" ? receipt.errorCode || "Failed" : titleCase(receipt.status))}${receipt.duplicateOfReceiptId ? " · possible duplicate" : ""}</span></td>
+          <td>${receipt.canResume ? `<button class="table-action" type="button" data-review-receipt="${escapeHtml(receipt.id)}">Resume review</button>` : "-"}</td>
         </tr>`).join("")
-      : tableEmpty(7, "No receipts uploaded yet", "Upload a grocery receipt to begin.");
+      : tableEmpty(8, "No receipts uploaded yet", "Upload a grocery receipt to begin.");
     clearSectionError("receipts-view");
     return true;
   } catch (error) {

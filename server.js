@@ -7,7 +7,8 @@ const { createStorage, latestRecordTimestamp } = require("./storage");
 const { createSquareService } = require("./square");
 const { createReceiptParser } = require("./receipt-parser");
 const { buildSalesSummary, effectiveQuantity, isRevenueSale } = require("./sales-analytics");
-const { applyReceiptItemsToInventory, buildInventoryIntelligence } = require("./inventory-analytics");
+const { buildInventoryIntelligence } = require("./inventory-analytics");
+const { planInventoryAdjustments, prepareReceiptReview } = require("./receipt-inventory");
 const { calculateRecipeProfitability } = require("./recipe-costing");
 const { buildPurchasingIntelligence } = require("./purchasing-intelligence");
 const { mergeSales } = require("./live-sales");
@@ -249,7 +250,13 @@ function startServer() {
       }
 
       if (url.pathname === "/api/receipts" && req.method === "GET") {
-        return sendJson(res, 200, receipts);
+        receipts = await storage.loadReceipts();
+        return sendJson(res, 200, receipts.map(publicReceipt));
+      }
+
+      const receiptReviewMatch = url.pathname.match(/^\/api\/receipts\/([^/]+)\/review$/);
+      if (receiptReviewMatch && req.method === "GET") {
+        return openReceiptReview(decodeURIComponent(receiptReviewMatch[1]), res);
       }
 
       if (url.pathname === "/api/receipts/approve" && req.method === "POST") {
@@ -600,36 +607,49 @@ async function parseReceiptUpload(req, res) {
   const fileBuffer = await readBufferBody(req, maxMegabytes * 1024 * 1024);
   if (!fileBuffer.length) throw validationError("Choose a receipt image to upload");
 
+  receipts = await storage.loadReceipts();
+  const contentHash = crypto.createHash("sha256").update(fileBuffer).digest("hex");
+  const duplicate = receipts.find((item) => item.contentHash === contentHash && item.status !== "failed");
   const receiptId = crypto.randomUUID();
   const receipt = {
     id: receiptId, expenseId: "", fileName, mimeType, fileSize: fileBuffer.length,
     extractionSource: "openai_vision", storeName: "", receiptDate: "",
     subtotal: 0, tax: 0, total: 0, itemCount: 0, status: "processing",
     errorCode: "", uploadedAt: new Date().toISOString(), approvedAt: "",
+    contentHash,
+    duplicateOfReceiptId: duplicate?.id || "",
+    reviewPayload: {},
   };
   receipts.unshift(receipt);
   await storage.saveReceipts(receipts);
 
   try {
     const parsed = await receiptParser.parse({ fileName, mimeType, fileBuffer });
+    collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
+    const prepared = prepareReceiptReview(parsed, collections.inventory);
+    if (duplicate) {
+      prepared.warnings = [...prepared.warnings, `Possible duplicate upload: ${duplicate.fileName} from ${duplicate.uploadedAt}. Review before approval.`];
+      prepared.duplicateOfReceiptId = duplicate.id;
+    }
     Object.assign(receipt, {
-      storeName: parsed.storeName,
-      receiptDate: parsed.receiptDate,
-      subtotal: parsed.subtotal,
-      tax: parsed.tax,
-      total: parsed.total,
-      itemCount: parsed.items.length,
+      storeName: prepared.storeName,
+      receiptDate: prepared.receiptDate,
+      subtotal: prepared.subtotal,
+      tax: prepared.tax,
+      total: prepared.total,
+      itemCount: prepared.items.length,
       status: "review",
+      reviewPayload: { ...prepared, inventoryItems: undefined },
     });
     await storage.saveReceipts(receipts);
     const draftId = crypto.randomUUID();
     receiptDrafts.set(draftId, {
       receiptId,
-      parsed,
+      parsed: receipt.reviewPayload,
       expiresAt: Date.now() + 30 * 60 * 1000,
       approving: false,
     });
-    return sendJson(res, 200, { draftId, receiptId, ...parsed });
+    return sendJson(res, 200, { draftId, receiptId, ...prepared });
   } catch (error) {
     receipt.status = "failed";
     receipt.errorCode = error.code || "ai_failed";
@@ -643,19 +663,32 @@ async function parseReceiptUpload(req, res) {
 async function approveReceipt(req, res) {
   purgeReceiptDrafts();
   const input = await readJsonBody(req);
-  const draft = receiptDrafts.get(String(input.draftId || ""));
-  if (!draft) {
-    const error = validationError("Receipt review expired. Upload the receipt again.");
+  const draftId = String(input.draftId || "");
+  const draft = receiptDrafts.get(draftId);
+  receipts = await storage.loadReceipts();
+  const receiptId = String(input.receiptId || draft?.receiptId || "");
+  const receipt = receipts.find((item) => item.id === receiptId);
+  if (!receipt) {
+    const error = validationError("Receipt review no longer exists.");
     error.statusCode = 404;
     throw error;
   }
-  if (draft.approving) {
+  if (draft?.approving) {
     const error = validationError("Receipt approval is already in progress.");
     error.statusCode = 409;
     throw error;
   }
+  if (receipt.status === "approved") {
+    return sendJson(res, 200, await receiptApprovalSummary(receiptId, true), noStoreHeaders());
+  }
+  if (receipt.status !== "review") throw validationError("Receipt is not ready for approval.");
+  if (receipt.duplicateOfReceiptId && !input.confirmDuplicate) {
+    const error = validationError("This image matches an earlier receipt. Confirm it is a separate purchase before applying it.");
+    error.statusCode = 409;
+    throw error;
+  }
   const reviewed = normalizeReceiptReview(input);
-  draft.approving = true;
+  if (draft) draft.approving = true;
   const now = new Date().toISOString();
   const expenseId = crypto.randomUUID();
   const expense = {
@@ -668,48 +701,46 @@ async function approveReceipt(req, res) {
     createdAt: now,
   };
   collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
-  const snapshot = {
-    expenses: structuredClone(collections.expenses),
-    inventory: structuredClone(collections.inventory),
-    receiptItems: structuredClone(receiptItems),
-    receipts: structuredClone(receipts),
-    priceHistory: structuredClone(priceHistory),
-  };
-
-  collections.expenses.unshift(expense);
-  const inventoryResults = applyReceiptItemsToInventory(collections.inventory, reviewed.items, {
-    storeName: reviewed.storeName,
-    now,
-    createId: () => crypto.randomUUID(),
-  });
-  const createdItems = inventoryResults.map(({ item, inventoryItem }) => {
-    if (inventoryItem) {
-      priceHistory.unshift({
-        id: crypto.randomUUID(),
-        inventoryId: inventoryItem.id,
-        ingredientName: inventoryItem.ingredientName,
-        supplier: reviewed.storeName,
-        costPerUnit: item.unitPrice,
-        unit: item.unit,
-        recordedAt: now,
-        reason: "receipt",
-      });
-    }
+  const plan = planInventoryAdjustments(collections.inventory, reviewed.items);
+  const adjustmentsByIndex = new Map(plan.adjustments.map((adjustment) => [adjustment.index, adjustment]));
+  const createdItems = reviewed.items.map((item, index) => {
+    const adjustment = adjustmentsByIndex.get(index);
     return {
       id: crypto.randomUUID(),
       expenseId,
-      receiptId: draft.receiptId,
-      inventoryItemId: inventoryItem?.id || "",
+      receiptId,
+      inventoryItemId: adjustment?.inventoryItemId || "",
       storeName: reviewed.storeName,
       receiptDate: reviewed.receiptDate,
       ...item,
+      quantity: item.receivedQuantity,
+      unit: item.receivedUnit,
+      updateInventory: Boolean(adjustment),
+      stockQuantity: adjustment?.stockQuantity || null,
+      stockUnit: adjustment?.stockUnit || "",
+      stockUnitPrice: adjustment && Number(item.totalPrice) > 0
+        ? roundQuantity(Number(item.totalPrice) / adjustment.stockQuantity)
+        : null,
+      adjustmentId: adjustment ? crypto.randomUUID() : "",
       createdAt: now,
     };
   });
-  receiptItems.unshift(...createdItems);
-  const receipt = receipts.find((item) => item.id === draft.receiptId);
-  if (receipt) {
-    Object.assign(receipt, {
+  const newPriceHistory = plan.adjustments.map((adjustment) => {
+    const item = createdItems[adjustment.index];
+    if (item.stockUnitPrice === null) return null;
+    return {
+        id: crypto.randomUUID(),
+        inventoryId: adjustment.inventoryItem.id,
+        ingredientName: adjustment.inventoryItem.ingredientName,
+        supplier: reviewed.storeName,
+        costPerUnit: item.stockUnitPrice,
+        unit: adjustment.stockUnit,
+        recordedAt: now,
+        reason: "receipt",
+    };
+  }).filter(Boolean);
+  const approvedReceipt = {
+      ...receipt,
       expenseId,
       storeName: reviewed.storeName,
       receiptDate: reviewed.receiptDate,
@@ -720,54 +751,73 @@ async function approveReceipt(req, res) {
       status: "approved",
       errorCode: "",
       approvedAt: now,
-    });
-  }
+      reviewPayload: { ...reviewed, items: createdItems },
+  };
 
   try {
-    await saveReceiptApproval();
+    const applied = await storage.applyReceiptApproval({
+      receiptId,
+      expense,
+      receipt: approvedReceipt,
+      items: createdItems,
+      priceHistory: newPriceHistory,
+    });
+    collections.expenses = (await storage.loadCollection("expenses")).map((item) => migrateRecord("expenses", item));
+    collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
+    receipts = await storage.loadReceipts();
+    receiptItems = await storage.loadReceiptItems();
+    priceHistory = await storage.loadPriceHistory();
+    receiptDrafts.delete(draftId);
+    await logActivity("receipt.approved", `Receipt from ${reviewed.storeName} approved with ${plan.adjustments.length} inventory updates`)
+      .catch((error) => console.error(`[receipts] Activity logging failed (${error.name}).`));
+    return sendJson(res, applied.alreadyApplied ? 200 : 201, {
+      expense,
+      alreadyApplied: Boolean(applied.alreadyApplied),
+      receiptItemCount: createdItems.length,
+      inventoryUpdatedCount: applied.inventoryUpdatedCount ?? plan.adjustments.length,
+      addedItems: plan.adjustments.map((adjustment) => ({
+        inventoryItemId: adjustment.inventoryItemId,
+        ingredientName: adjustment.inventoryItem.ingredientName,
+        receivedQuantity: adjustment.receivedQuantity,
+        receivedUnit: adjustment.receivedUnit,
+        addedQuantity: adjustment.stockQuantity,
+        stockUnit: adjustment.stockUnit,
+      })),
+      unresolvedLines: plan.unresolvedLines,
+      inventory: { ...buildInventoryIntelligence(collections.inventory), alerts: buildInventoryIntelligence(collections.inventory).summary.lowStockCount },
+    }, noStoreHeaders());
   } catch (error) {
-    collections.expenses = snapshot.expenses;
-    collections.inventory = snapshot.inventory;
-    receiptItems = snapshot.receiptItems;
-    receipts = snapshot.receipts;
-    priceHistory = snapshot.priceHistory;
-    await saveReceiptApproval().catch((rollbackError) => console.error(`[receipts] Rollback persistence failed (${rollbackError.name}).`));
-    draft.approving = false;
+    if (draft) draft.approving = false;
     throw error;
   }
-  receiptDrafts.delete(String(input.draftId));
-  await logActivity("receipt.approved", `Receipt from ${reviewed.storeName} approved with ${createdItems.length} items`)
-    .catch((error) => console.error(`[receipts] Activity logging failed (${error.name}).`));
-  return sendJson(res, 201, {
-    expense,
-    receiptItemCount: createdItems.length,
-    inventoryUpdatedCount: createdItems.filter((item) => item.updateInventory).length,
-  });
-}
-
-async function saveReceiptApproval() {
-  await storage.saveCollection("expenses", collections.expenses);
-  await storage.saveCollection("inventory", collections.inventory);
-  await storage.saveReceipts(receipts);
-  await storage.saveReceiptItems(receiptItems);
-  await storage.savePriceHistory(priceHistory);
 }
 
 function normalizeReceiptReview(input) {
   const items = Array.isArray(input.items) ? input.items.map((item) => {
-    const unit = allowedValue(item.unit, ["lb", "oz", "g", "kg", "count", "dozen", "gallon", "unknown"], "Item unit");
+    const receivedUnit = allowedValue(item.receivedUnit ?? item.unit, ["lb", "oz", "g", "kg", "count", "dozen", "gallon", "unknown"], "Received unit");
     const isDiscount = Boolean(item.isDiscount);
     const isFee = Boolean(item.isFee);
     const isDeposit = Boolean(item.isDeposit);
+    const updateInventory = Boolean(item.updateInventory) && !isDiscount && !isFee && !isDeposit;
+    const receivedQuantity = requiredPositiveQuantity(item.receivedQuantity ?? item.quantity, "Received quantity");
     return {
       itemName: requiredText(item.itemName, "Item name"),
       rawLine: optionalText(item.rawLine).slice(0, 300),
-      quantity: requiredPositiveNumber(item.quantity, "Item quantity"),
-      unit,
+      quantity: receivedQuantity,
+      unit: receivedUnit,
+      receivedQuantity,
+      receivedUnit,
+      packageCount: optionalNullablePositiveNumber(item.packageCount, "Package count"),
+      packageSizeQuantity: optionalNullablePositiveNumber(item.packageSizeQuantity, "Package size"),
+      packageSizeUnit: item.packageSizeQuantity
+        ? allowedValue(item.packageSizeUnit, ["lb", "oz", "g", "kg", "count", "dozen", "gallon", "unknown"], "Package unit")
+        : "unknown",
       unitPrice: requiredMoney(item.unitPrice, "Unit price"),
       totalPrice: requiredSignedMoney(item.totalPrice, "Total price"),
       category: allowedValue(item.category, ["Ingredients", "Packaging", "Equipment", "Utilities", "Other"], "Item category"),
-      updateInventory: Boolean(item.updateInventory) && unit !== "unknown" && !isDiscount && !isFee && !isDeposit,
+      inventoryItemId: optionalText(item.inventoryItemId),
+      updateInventory,
+      unresolvedReason: optionalText(item.unresolvedReason),
       isDiscount,
       isFee,
       isDeposit,
@@ -780,8 +830,51 @@ function normalizeReceiptReview(input) {
     subtotal: requiredMoney(input.subtotal, "Subtotal"),
     tax: requiredMoney(input.tax, "Tax"),
     total: requiredMoney(input.total, "Total"),
+    confirmDuplicate: Boolean(input.confirmDuplicate),
     items,
   };
+}
+
+async function openReceiptReview(receiptId, res) {
+  receipts = await storage.loadReceipts();
+  const receipt = receipts.find((item) => item.id === receiptId);
+  if (!receipt) return sendJson(res, 404, { error: "Receipt not found" });
+  if (receipt.status === "approved") return sendJson(res, 409, { error: "This receipt was already applied to inventory." });
+  if (receipt.status !== "review" || !receipt.reviewPayload?.items?.length) {
+    return sendJson(res, 409, { error: "This receipt has no saved review to resume. Upload it again." });
+  }
+  collections.inventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
+  return sendJson(res, 200, { receiptId, ...prepareReceiptReview(receipt.reviewPayload, collections.inventory) }, noStoreHeaders());
+}
+
+async function receiptApprovalSummary(receiptId, alreadyApplied) {
+  const storedItems = (await storage.loadReceiptItems()).filter((item) => item.receiptId === receiptId);
+  const liveInventory = (await storage.loadCollection("inventory")).map((item) => migrateRecord("inventory", item));
+  const addedItems = storedItems.filter((item) => item.updateInventory).map((item) => {
+    const inventoryItem = liveInventory.find((candidate) => candidate.id === item.inventoryItemId);
+    return {
+      inventoryItemId: item.inventoryItemId,
+      ingredientName: inventoryItem?.ingredientName || item.itemName,
+      receivedQuantity: item.receivedQuantity ?? item.quantity,
+      receivedUnit: item.receivedUnit ?? item.unit,
+      addedQuantity: item.stockQuantity ?? item.quantity,
+      stockUnit: item.stockUnit || inventoryItem?.unit || item.unit,
+    };
+  });
+  return {
+    alreadyApplied,
+    receiptItemCount: storedItems.length,
+    inventoryUpdatedCount: addedItems.length,
+    addedItems,
+    unresolvedLines: storedItems.filter((item) => !item.updateInventory && !item.isDiscount && !item.isFee && !item.isDeposit)
+      .map((item, index) => ({ index, itemName: item.itemName, reason: "Not applied to inventory." })),
+    inventory: { ...buildInventoryIntelligence(liveInventory), alerts: buildInventoryIntelligence(liveInventory).summary.lowStockCount },
+  };
+}
+
+function publicReceipt(receipt) {
+  const { reviewPayload, contentHash, ...safe } = receipt;
+  return { ...safe, canResume: receipt.status === "review" && Boolean(reviewPayload?.items?.length) };
 }
 
 function receiptExpenseCategory(items) {
@@ -1364,6 +1457,7 @@ function serveStatic(pathname, res) {
     path.join(root, "system-status.js"),
     path.join(root, "live-sales.js"),
     path.join(root, "contacts-polling.js"),
+    path.join(root, "receipt-ui.js"),
     path.join(root, "trend-finder-ui.js"),
     path.join(root, "square-connect-fix.js"),
   ]);
@@ -1524,6 +1618,17 @@ function requiredPositiveNumber(value, label) {
   return round(number);
 }
 
+function requiredPositiveQuantity(value, label) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number <= 0) throw validationError(`${label} must be greater than zero`);
+  return roundQuantity(number);
+}
+
+function optionalNullablePositiveNumber(value, label) {
+  if (value === "" || value === null || value === undefined) return null;
+  return requiredPositiveQuantity(value, label);
+}
+
 function requiredNonNegativeNumber(value, label) {
   const number = Number(value);
   if (!Number.isFinite(number) || number < 0) throw validationError(`${label} must be zero or more`);
@@ -1553,4 +1658,8 @@ function sum(items, key) {
 
 function round(value) {
   return Math.round(Number(value) * 100) / 100;
+}
+
+function roundQuantity(value) {
+  return Math.round(Number(value) * 10000) / 10000;
 }

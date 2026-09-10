@@ -2,7 +2,8 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
-const { applyReceiptItemsToInventory, buildInventoryIntelligence } = require("../inventory-analytics");
+const { buildInventoryIntelligence } = require("../inventory-analytics");
+const { planInventoryAdjustments } = require("../receipt-inventory");
 const { createStorage } = require("../storage");
 
 function supabaseInventoryClient(getRows) {
@@ -87,32 +88,28 @@ test("empty inventory state renders correctly", () => {
   assert.equal(script.includes('tableEmpty(10, "No inventory items added yet"'), true);
 });
 
-test("approved receipt items update inventory quantities and totals", () => {
+test("receipt stock planning targets existing inventory without creating duplicates", () => {
   const inventory = [
     { id: "flour", ingredientName: "Flour", category: "Ingredients", quantity: 2, unit: "lb", minimumThreshold: 1, supplier: "Old Store", costPerUnit: 3, createdAt: "2026-06-01T10:00:00Z" },
   ];
-  let id = 0;
-  const results = applyReceiptItemsToInventory(inventory, [
-    { itemName: "Flour", category: "Ingredients", quantity: 3, unit: "lb", unitPrice: 4, updateInventory: true },
-    { itemName: "Cake Boxes", category: "Packaging", quantity: 1, unit: "count", unitPrice: 5, updateInventory: true },
-    { itemName: "Delivery Fee", category: "Other", quantity: 1, unit: "count", unitPrice: 2, updateInventory: false },
-  ], {
-    storeName: "Bakery Supply",
-    now: "2026-06-26T12:00:00Z",
-    createId: () => "new-" + (++id),
-  });
+  const plan = planInventoryAdjustments(inventory, [
+    { itemName: "Flour", category: "Ingredients", receivedQuantity: 3, receivedUnit: "lb", inventoryItemId: "flour", updateInventory: true },
+    { itemName: "Cake Boxes", category: "Packaging", receivedQuantity: 1, receivedUnit: "count", inventoryItemId: "", updateInventory: false },
+    { itemName: "Delivery Fee", category: "Other", receivedQuantity: 1, receivedUnit: "count", updateInventory: false },
+  ]);
 
-  assert.equal(results.filter((result) => result.inventoryItem).length, 2);
-  assert.equal(inventory.find((item) => item.id === "flour").quantity, 5);
-  assert.equal(inventory.find((item) => item.id === "flour").costPerUnit, 4);
-  assert.equal(inventory.find((item) => item.ingredientName === "Cake Boxes").category, "Packaging");
+  assert.equal(plan.adjustments.length, 1);
+  assert.equal(plan.adjustments[0].afterQuantity, 5);
+  assert.equal(plan.unresolvedLines[0].itemName, "Cake Boxes");
+  assert.equal(inventory.length, 1);
   assert.deepEqual(buildInventoryIntelligence(inventory).summary, {
-    totalTrackedItems: 2,
+    totalTrackedItems: 1,
     lowStockCount: 0,
-    estimatedInventoryValue: 25,
-    recentlyUpdatedCount: 2,
+    estimatedInventoryValue: 6,
+    recentlyUpdatedCount: 1,
   });
 
   const server = fs.readFileSync(path.join(__dirname, "..", "server.js"), "utf8");
-  assert.equal(server.includes("applyReceiptItemsToInventory(collections.inventory, reviewed.items"), true);
+  assert.equal(server.includes("planInventoryAdjustments(collections.inventory, reviewed.items"), true);
+  assert.equal(server.includes("storage.applyReceiptApproval"), true);
 });

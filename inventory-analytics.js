@@ -34,42 +34,8 @@ function enrichInventoryItem(item) {
   };
 }
 
-function applyReceiptItemsToInventory(inventory, items, { storeName, now, createId }) {
-  return items.map((item) => {
-    if (!item.updateInventory) return { item, inventoryItem: null };
-    let inventoryItem = inventory.find(
-      (record) => normalizeName(record.ingredientName) === normalizeName(item.itemName) && record.unit === item.unit,
-    );
-    if (inventoryItem) {
-      inventoryItem.quantity = round(Number(inventoryItem.quantity || 0) + Number(item.quantity || 0));
-      inventoryItem.costPerUnit = Number(item.unitPrice || 0);
-      inventoryItem.supplier = storeName;
-      inventoryItem.category = item.category || inventoryItem.category || "Ingredients";
-      inventoryItem.updatedAt = now;
-    } else {
-      inventoryItem = {
-        id: createId(),
-        ingredientName: item.itemName,
-        category: item.category || "Ingredients",
-        quantity: Number(item.quantity || 0),
-        unit: item.unit,
-        minimumThreshold: 0,
-        supplier: storeName,
-        costPerUnit: Number(item.unitPrice || 0),
-        createdAt: now,
-      };
-      inventory.unshift(inventoryItem);
-    }
-    return { item, inventoryItem };
-  });
-}
-
-function normalizeName(value) {
-  return String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
-}
-
 function round(value) {
   return Math.round(Number(value) * 100) / 100;
 }
 
-module.exports = { applyReceiptItemsToInventory, buildInventoryIntelligence };
+module.exports = { buildInventoryIntelligence };

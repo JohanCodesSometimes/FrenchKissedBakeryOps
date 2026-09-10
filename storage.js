@@ -13,6 +13,7 @@ const localFiles = {
   squareConnection: "square-connection.json",
   receiptItems: "receipt-items.json",
   receipts: "receipts.json",
+  receiptJournal: "receipt-application-journal.json",
   customers: "customers.json",
 };
 
@@ -40,6 +41,7 @@ async function createStorage({ dataDir, env = process.env, logger = console, sup
 function createLocalStorage(dataDir) {
   const resolvedDir = path.resolve(dataDir);
   fs.mkdirSync(resolvedDir, { recursive: true });
+  recoverLocalReceiptJournal(resolvedDir);
 
   return {
     mode: "json",
@@ -88,6 +90,9 @@ function createLocalStorage(dataDir) {
     async loadReceiptItems() {
       return loadArray(path.join(resolvedDir, localFiles.receiptItems));
     },
+    async loadReceipts() {
+      return loadArray(path.join(resolvedDir, localFiles.receipts));
+    },
     async loadCustomers() {
       return loadArray(path.join(resolvedDir, localFiles.customers));
     },
@@ -129,6 +134,9 @@ function createLocalStorage(dataDir) {
     },
     async saveReceipts(value) {
       writeJsonAtomic(path.join(resolvedDir, localFiles.receipts), value);
+    },
+    async applyReceiptApproval(payload) {
+      return applyLocalReceiptApproval(resolvedDir, payload);
     },
     async saveCustomers(value) {
       writeJsonAtomic(path.join(resolvedDir, localFiles.customers), value);
@@ -198,6 +206,9 @@ function createSupabaseStorage(client) {
     async loadReceiptItems() {
       return (await selectReceiptItems(client)).map(fromReceiptItemRow);
     },
+    async loadReceipts() {
+      return (await selectReceipts(client)).map(fromReceiptRow);
+    },
     async loadCustomers() {
       return (await selectCustomers(client)).map(fromCustomerRow);
     },
@@ -261,6 +272,20 @@ function createSupabaseStorage(client) {
     },
     async saveReceipts(value) {
       await syncTable(client, "receipts", value.map(toReceiptRow));
+    },
+    async applyReceiptApproval(payload) {
+      const { data, error } = await client.rpc("apply_receipt_inventory", {
+        p_payload: toReceiptApprovalPayload(payload),
+      });
+      if (error) {
+        if (/apply_receipt_inventory|schema cache|function.*does not exist/i.test(error.message || "")) {
+          const missing = new Error("Receipt inventory updates require migration 20260910_receipt_inventory.sql.");
+          missing.statusCode = 503;
+          throw missing;
+        }
+        throw storageError("apply receipt inventory transaction", error);
+      }
+      return data || { alreadyApplied: false };
     },
     async saveCustomers(value) {
       await syncTable(client, "customers", value.map(toCustomerRow));
@@ -608,8 +633,15 @@ function toReceiptItemRow(item) {
     receipt_date: item.receiptDate,
     item_name: item.itemName,
     raw_line: item.rawLine || "",
-    quantity: item.quantity,
-    unit: item.unit,
+    quantity: item.receivedQuantity ?? item.quantity,
+    unit: item.receivedUnit ?? item.unit,
+    received_quantity: item.receivedQuantity ?? item.quantity,
+    received_unit: item.receivedUnit ?? item.unit,
+    package_count: item.packageCount ?? null,
+    package_size_quantity: item.packageSizeQuantity ?? null,
+    package_size_unit: item.packageSizeUnit || null,
+    stock_quantity: item.stockQuantity ?? null,
+    stock_unit: item.stockUnit || null,
     unit_price: item.unitPrice,
     total_price: item.totalPrice,
     category: item.category,
@@ -632,6 +664,13 @@ function fromReceiptItemRow(row) {
     rawLine: row.raw_line || "",
     quantity: Number(row.quantity),
     unit: row.unit,
+    receivedQuantity: Number(row.received_quantity ?? row.quantity),
+    receivedUnit: row.received_unit || row.unit,
+    packageCount: row.package_count === null || row.package_count === undefined ? null : Number(row.package_count),
+    packageSizeQuantity: row.package_size_quantity === null || row.package_size_quantity === undefined ? null : Number(row.package_size_quantity),
+    packageSizeUnit: row.package_size_unit || "unknown",
+    stockQuantity: row.stock_quantity === null || row.stock_quantity === undefined ? null : Number(row.stock_quantity),
+    stockUnit: row.stock_unit || "",
     unitPrice: Number(row.unit_price),
     totalPrice: Number(row.total_price),
     category: row.category,
@@ -660,6 +699,9 @@ function toReceiptRow(item) {
     error_code: item.errorCode || "",
     uploaded_at: item.uploadedAt,
     approved_at: item.approvedAt || null,
+    content_hash: item.contentHash || null,
+    duplicate_of_receipt_id: item.duplicateOfReceiptId || null,
+    review_payload: item.reviewPayload || {},
   };
 }
 function fromReceiptRow(row) {
@@ -680,6 +722,9 @@ function fromReceiptRow(row) {
     errorCode: row.error_code || "",
     uploadedAt: row.uploaded_at,
     approvedAt: row.approved_at || "",
+    contentHash: row.content_hash || "",
+    duplicateOfReceiptId: row.duplicate_of_receipt_id || "",
+    reviewPayload: row.review_payload || {},
   };
 }
 
@@ -716,6 +761,81 @@ function fromCustomerRow(row) {
     createdAt: row.created_at,
     updatedAt: row.updated_at || "",
   };
+}
+
+function applyLocalReceiptApproval(resolvedDir, payload) {
+  const receipts = loadArray(path.join(resolvedDir, localFiles.receipts));
+  const receiptIndex = receipts.findIndex((item) => item.id === payload.receiptId);
+  if (receiptIndex === -1) throw new Error("[storage] Receipt no longer exists");
+  if (receipts[receiptIndex].status === "approved") return { alreadyApplied: true };
+
+  const expenses = loadArray(path.join(resolvedDir, "expenses.json"));
+  const inventory = loadArray(path.join(resolvedDir, "inventory.json"));
+  const receiptItems = loadArray(path.join(resolvedDir, localFiles.receiptItems));
+  const priceHistory = loadArray(path.join(resolvedDir, localFiles.priceHistory));
+  expenses.unshift(payload.expense);
+  for (const item of payload.items) {
+    if (!item.updateInventory) continue;
+    const inventoryItem = inventory.find((candidate) => candidate.id === item.inventoryItemId);
+    if (!inventoryItem) throw new Error(`[storage] Inventory item ${item.inventoryItemId} no longer exists`);
+    inventoryItem.quantity = roundStorage(Number(inventoryItem.quantity || 0) + Number(item.stockQuantity));
+    inventoryItem.costPerUnit = Number(item.stockUnitPrice || inventoryItem.costPerUnit || 0);
+    inventoryItem.supplier = payload.receipt.storeName;
+    inventoryItem.updatedAt = payload.receipt.approvedAt;
+  }
+  receiptItems.unshift(...payload.items);
+  priceHistory.unshift(...payload.priceHistory);
+  receipts[receiptIndex] = { ...receipts[receiptIndex], ...payload.receipt };
+
+  const documents = {
+    "expenses.json": expenses,
+    "inventory.json": inventory,
+    [localFiles.receiptItems]: receiptItems,
+    [localFiles.receipts]: receipts,
+    [localFiles.priceHistory]: priceHistory,
+  };
+  const journalPath = path.join(resolvedDir, localFiles.receiptJournal);
+  writeJsonAtomic(journalPath, { status: "pending", receiptId: payload.receiptId, documents });
+  try {
+    for (const [fileName, value] of Object.entries(documents)) writeJsonAtomic(path.join(resolvedDir, fileName), value);
+    writeJsonAtomic(journalPath, { status: "complete", receiptId: payload.receiptId });
+  } catch (error) {
+    recoverLocalReceiptJournal(resolvedDir);
+    const recovered = loadArray(path.join(resolvedDir, localFiles.receipts))
+      .find((item) => item.id === payload.receiptId)?.status === "approved";
+    if (!recovered) throw error;
+  }
+  return { alreadyApplied: false };
+}
+
+function recoverLocalReceiptJournal(resolvedDir) {
+  const journalPath = path.join(resolvedDir, localFiles.receiptJournal);
+  const journal = loadObject(journalPath);
+  if (journal.status !== "pending" || !journal.documents) return;
+  for (const [fileName, value] of Object.entries(journal.documents)) {
+    writeJsonAtomic(path.join(resolvedDir, path.basename(fileName)), value);
+  }
+  writeJsonAtomic(journalPath, { status: "complete", receiptId: journal.receiptId || "" });
+}
+
+function toReceiptApprovalPayload(payload) {
+  return {
+    receipt_id: payload.receiptId,
+    expense: toExpenseRow(payload.expense),
+    receipt: toReceiptRow(payload.receipt),
+    items: payload.items.map((item) => ({
+      ...toReceiptItemRow(item),
+      stock_quantity: item.stockQuantity || null,
+      stock_unit: item.stockUnit || null,
+      stock_unit_price: item.stockUnitPrice || null,
+      adjustment_id: item.adjustmentId || null,
+    })),
+    price_history: payload.priceHistory.map((item) => toSupplierPriceRow(item, "inventory_history")),
+  };
+}
+
+function roundStorage(value) {
+  return Math.round(Number(value) * 10000) / 10000;
 }
 
 function loadArray(filePath) {

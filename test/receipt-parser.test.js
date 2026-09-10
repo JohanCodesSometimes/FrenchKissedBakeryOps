@@ -84,7 +84,8 @@ test("receipt parser keeps convenience-store items and tolerates missing fields"
   assert.equal(result.storeName, "Circle K");
   assert.equal(result.receiptDate, "");
   assert.equal(result.items.length, 3);
-  assert.equal(result.items[1].quantity, 1);
+  assert.equal(result.items[1].quantity, 0);
+  assert.equal(result.items[1].quantityUncertain, true);
   assert.equal(result.items[2].totalPrice, -1);
   assert.equal(result.items[2].isDiscount, true);
   assert.ok(result.warnings.some((warning) => warning.includes("Receipt date")));

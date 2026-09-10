@@ -166,12 +166,14 @@
           </article>
 
           <article class="panel section-gap" id="receipt-review-panel" hidden>
-            <form class="entry-form" id="receipt-review-form"><input name="draftId" type="hidden" /><div class="panel-header"><div><p class="eyebrow">Receipt review</p><h2>Review before saving</h2></div></div><div class="receipt-review-warnings" id="receipt-review-warnings" hidden></div><div class="form-grid receipt-summary"><label>Store Name<input name="storeName" type="text" maxlength="120" required /></label><label>Receipt Date<input name="receiptDate" type="date" required /></label><label>Subtotal<input name="subtotal" type="number" min="0" step="0.01" required /></label><label>Tax<input name="tax" type="number" min="0" step="0.01" required /></label><label>Total<input name="total" type="number" min="0" step="0.01" required /></label></div><div class="table-wrap receipt-review-table"><table><thead><tr><th>Item</th><th>Qty</th><th>Unit</th><th>Unit Price</th><th>Total</th><th>Category</th><th>Inventory</th></tr></thead><tbody id="receipt-review-items"></tbody></table></div><p class="settings-copy">Only checked items will update inventory and supplier price history.</p><div class="form-actions"><button class="ghost-button" id="cancel-receipt-review" type="button">Cancel</button><button class="primary-button" type="submit">Approve Receipt</button></div></form>
+            <form class="entry-form" id="receipt-review-form"><input name="draftId" type="hidden" /><input name="receiptId" type="hidden" /><div class="panel-header"><div><p class="eyebrow">Receipt review</p><h2>Review before applying stock</h2></div></div><div class="receipt-review-warnings" id="receipt-review-warnings" hidden></div><label class="receipt-duplicate-confirm" id="receipt-duplicate-confirm" hidden><input name="confirmDuplicate" type="checkbox" /> This image matches an earlier upload. Confirm it is a separate purchase before applying it.</label><div class="form-grid receipt-summary"><label>Store Name<input name="storeName" type="text" maxlength="120" required /></label><label>Receipt Date<input name="receiptDate" type="date" required /></label><label>Subtotal<input name="subtotal" type="number" min="0" step="0.01" required /></label><label>Tax<input name="tax" type="number" min="0" step="0.01" required /></label><label>Total<input name="total" type="number" min="0" step="0.01" required /></label></div><div class="table-wrap receipt-review-table"><table><thead><tr><th>Receipt item</th><th>Received qty</th><th>Received unit</th><th>Package details</th><th>Unit price</th><th>Line total</th><th>Category</th><th>Existing inventory match</th><th>Apply</th></tr></thead><tbody id="receipt-review-items"></tbody></table></div><p class="settings-copy">Choose an existing inventory item for each stock line. Known unit conversions are applied automatically; receipt approval never creates new inventory items.</p><div class="form-actions"><button class="ghost-button" id="cancel-receipt-review" type="button">Cancel</button><button class="primary-button" type="submit">Apply Receipt</button></div></form>
           </article>
+
+          <article class="panel section-gap receipt-application-result" id="receipt-application-result" aria-live="polite" hidden></article>
 
           <article class="panel section-gap">
             <div class="panel-header"><div><p class="eyebrow">Receipt history</p><h2>Uploaded receipts</h2></div></div>
-            <div class="table-wrap"><table><thead><tr><th>Uploaded</th><th>File</th><th>Store</th><th>Receipt Date</th><th>Total</th><th>Items</th><th>Status</th></tr></thead><tbody id="receipts-body"><tr><td colspan="7"><div class="empty-state table-empty"><strong>No receipts uploaded yet</strong><p>Upload a grocery receipt to begin.</p></div></td></tr></tbody></table></div>
+            <div class="table-wrap"><table><thead><tr><th>Uploaded</th><th>File</th><th>Store</th><th>Receipt Date</th><th>Total</th><th>Items</th><th>Status</th><th>Action</th></tr></thead><tbody id="receipts-body"><tr><td colspan="8"><div class="empty-state table-empty"><strong>No receipts uploaded yet</strong><p>Upload a grocery receipt to begin.</p></div></td></tr></tbody></table></div>
           </article>
         </section>
 
@@ -337,7 +339,8 @@
     <script src="system-status.js?v=2026-07-21-status-runtime-failsafe"></script>
     <script src="live-sales.js?v=2026-07-24-sales-sync-regression"></script>
     <script src="contacts-polling.js?v=2026-07-21-owner-readiness"></script>
-    <script src="script.js?v=2026-07-24-sales-sync-regression"></script>
+    <script src="receipt-ui.js?v=2026-09-10-receipt-inventory"></script>
+    <script src="script.js?v=2026-09-10-receipt-inventory"></script>
     <script src="trend-finder-ui.js?v=2026-07-21-owner-readiness"></script>
     <script src="/square-connect-fix.js?v=2026-07-21-owner-readiness"></script>
   </body>
